@@ -1,17 +1,55 @@
 [project]
 name = "ews"
 version = "0.1.0"
-description = "Add your description here"
+description = "A CLI adapter between AI agents and Exchange Web Services"
 readme = "README.md"
 authors = [
     { name = "HuYang", email = "huyangcommit@gmail.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "cyclopts>=4.22,<5",
+    "email-validator>=2.3,<3",
+    "exchangelib>=5.6,<6",
+    "keyring>=25,<26",
+    "pydantic>=2.12,<3",
+    "tomli-w>=1.2,<2",
+]
 
 [project.scripts]
-ews = "ews:main"
+ews = "ews.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.411,<2",
+    "pytest>=9,<10",
+    "pytest-cov>=7,<8",
+    "ruff>=0.15,<1",
+]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--cov=ews",
+    "--cov-branch",
+    "--cov-report=term-missing",
+    "--cov-fail-under=90",
+]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
