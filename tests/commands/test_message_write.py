@@ -21,11 +21,13 @@ from ews.exchange import (
 from ews.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
+    DraftMessage,
     Folder,
     FolderSyncResult,
     MailboxAddress,
     MessageBody,
     MessageDetail,
+    MessageDraftResult,
     MessageMoveResult,
     MessageReadStateResult,
     MessageSendResult,
@@ -45,7 +47,9 @@ class WriteGateway:
     def __init__(self) -> None:
         self.error: Exception | None = None
         self.sent: list[OutgoingMessage] = []
+        self.drafts: list[DraftMessage] = []
         self.replies: list[tuple[str, OutgoingReply, bool]] = []
+        self.reply_drafts: list[tuple[str, OutgoingReply, bool]] = []
         self.read_states: list[tuple[str, bool]] = []
         self.moves: list[tuple[str, str]] = []
         self.saved: list[tuple[str, str, Path]] = []
@@ -93,6 +97,14 @@ class WriteGateway:
             bcc=[MailboxAddress(address=str(address)) for address in message.bcc],
         )
 
+    def save_message_draft(
+        self, profile: Profile, password: SecretStr, message: DraftMessage
+    ) -> MessageDraftResult:
+        del password
+        self._raise_error()
+        self.drafts.append(message)
+        return _draft_result(profile, message.subject, message)
+
     def reply_message(
         self,
         profile: Profile,
@@ -107,6 +119,29 @@ class WriteGateway:
         self.replies.append((message_id, reply, reply_all))
         return MessageSendResult(
             user=profile.user.username,
+            subject=reply.subject or "RE: Report",
+            to=[MailboxAddress(address="author@example.com")],
+            cc=[],
+            bcc=[],
+        )
+
+    def save_reply_draft(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        reply: OutgoingReply,
+        *,
+        reply_all: bool,
+    ) -> MessageDraftResult:
+        del password
+        self._raise_error()
+        self.reply_drafts.append((message_id, reply, reply_all))
+        return MessageDraftResult(
+            user=profile.user.username,
+            message_id="draft-id",
+            change_key="draft-change-1",
+            folder_id="drafts-id",
             subject=reply.subject or "RE: Report",
             to=[MailboxAddress(address="author@example.com")],
             cc=[],
@@ -233,6 +268,86 @@ def test_send_reads_the_body_from_standard_input(
     assert gateway.sent[0].body == MessageBody(content_type="text", content="Body from stdin")
 
 
+def test_draft_create_allows_no_recipients_and_returns_identifiers(
+    tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
+) -> None:
+    gateway = WriteGateway()
+    _configure_context(tmp_path, monkeypatch, gateway, ready=False)
+    body_file = tmp_path / "body.txt"
+    body_file.write_text("Draft body", encoding="utf-8")
+
+    exit_code, output = _invoke(
+        [
+            "--user",
+            MAILBOX,
+            "message",
+            "draft",
+            "create",
+            "--subject",
+            "Draft subject",
+            "--body-file",
+            str(body_file),
+        ],
+        capsys,
+    )
+
+    assert exit_code == 0
+    assert output == {
+        "schema_version": 1,
+        "ok": True,
+        "data": {
+            "user": "DOMAIN\\agent",
+            "message_id": "draft-id",
+            "change_key": "draft-change-1",
+            "folder_id": "drafts-id",
+            "subject": "Draft subject",
+            "to": [],
+            "cc": [],
+            "bcc": [],
+        },
+    }
+    assert gateway.drafts[0].body.content == "Draft body"
+    assert gateway.sent == []
+
+
+@pytest.mark.parametrize(
+    ("command", "reply_all"),
+    [("reply", False), ("reply-all", True)],
+)
+def test_draft_reply_commands_save_without_sending(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+    monkeypatch: MonkeyPatch,
+    command: str,
+    reply_all: bool,
+) -> None:
+    gateway = WriteGateway()
+    _configure_context(tmp_path, monkeypatch, gateway)
+    monkeypatch.setattr("sys.stdin", _Stdin("Draft reply"))
+
+    exit_code, output = _invoke(
+        [
+            "--user",
+            MAILBOX,
+            "message",
+            "draft",
+            command,
+            "message-id",
+            "--body-file",
+            "-",
+        ],
+        capsys,
+    )
+
+    assert exit_code == 0
+    message_id, reply, recorded_reply_all = gateway.reply_drafts[0]
+    assert message_id == "message-id"
+    assert reply.body.content == "Draft reply"
+    assert recorded_reply_all is reply_all
+    assert cast(dict[str, JsonValue], output["data"])["message_id"] == "draft-id"
+    assert gateway.replies == []
+
+
 def test_send_handles_an_unreadable_body_file(
     tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
 ) -> None:
@@ -276,9 +391,21 @@ def test_send_requires_at_least_one_recipient(
     assert "At least one of to, cc or bcc is required" in str(_error(output)["message"])
 
 
-@pytest.mark.parametrize("command", ["reply", "reply-all"])
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["message", "reply", "message-id"],
+        ["message", "reply-all", "message-id"],
+        ["message", "draft", "create"],
+        ["message", "draft", "reply", "message-id"],
+        ["message", "draft", "reply-all", "message-id"],
+    ],
+)
 def test_reply_handles_an_unreadable_body_file(
-    tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch, command: str
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+    monkeypatch: MonkeyPatch,
+    arguments: list[str],
 ) -> None:
     gateway = WriteGateway()
     _configure_context(tmp_path, monkeypatch, gateway)
@@ -287,9 +414,7 @@ def test_reply_handles_an_unreadable_body_file(
         [
             "--user",
             MAILBOX,
-            "message",
-            command,
-            "message-id",
+            *arguments,
             "--body-file",
             str(tmp_path / "missing.txt"),
         ],
@@ -299,6 +424,8 @@ def test_reply_handles_an_unreadable_body_file(
     assert exit_code == 2
     assert _error(output)["code"] == "invalid_argument"
     assert gateway.replies == []
+    assert gateway.drafts == []
+    assert gateway.reply_drafts == []
 
 
 def test_send_rejects_an_invalid_recipient_address(
@@ -462,6 +589,9 @@ def test_move_rejects_an_unknown_folder(
         ["message", "send", "--to", "to@example.com", "--body-file", "-"],
         ["message", "reply", "message-id", "--body-file", "-"],
         ["message", "reply-all", "message-id", "--body-file", "-"],
+        ["message", "draft", "create", "--body-file", "-"],
+        ["message", "draft", "reply", "message-id", "--body-file", "-"],
+        ["message", "draft", "reply-all", "message-id", "--body-file", "-"],
         ["message", "mark-read", "message-id"],
         ["message", "move", "message-id", "--folder", "sentitems"],
     ],
@@ -680,3 +810,16 @@ def _invoke(arguments: list[str], capsys: CaptureFixture[str]) -> tuple[int, dic
 
 def _error(output: dict[str, JsonValue]) -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], output["error"])
+
+
+def _draft_result(profile: Profile, subject: str, message: DraftMessage) -> MessageDraftResult:
+    return MessageDraftResult(
+        user=profile.user.username,
+        message_id="draft-id",
+        change_key="draft-change-1",
+        folder_id="drafts-id",
+        subject=subject,
+        to=[MailboxAddress(address=str(address)) for address in message.to],
+        cc=[MailboxAddress(address=str(address)) for address in message.cc],
+        bcc=[MailboxAddress(address=str(address)) for address in message.bcc],
+    )

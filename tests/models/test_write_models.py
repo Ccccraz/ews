@@ -2,8 +2,10 @@ import pytest
 from pydantic import ValidationError
 
 from ews.models import (
+    DraftMessage,
     MailboxAddress,
     MessageBody,
+    MessageDraftResult,
     MessageMoveResult,
     MessageReadStateResult,
     MessageSendResult,
@@ -40,6 +42,19 @@ def test_outgoing_message_rejects_an_unknown_content_type() -> None:
         )
 
 
+def test_draft_message_allows_no_recipients() -> None:
+    draft = DraftMessage.model_validate({"subject": "Unfinished", "body": _body("text", "Body")})
+
+    assert draft.to == []
+    assert draft.cc == []
+    assert draft.bcc == []
+
+
+def test_draft_message_validates_supplied_recipients() -> None:
+    with pytest.raises(ValidationError):
+        DraftMessage.model_validate({"to": ["not-an-address"], "body": _body("text", "Body")})
+
+
 def test_outgoing_reply_omits_the_subject_by_default() -> None:
     reply = OutgoingReply.model_validate({"body": _body("html", "<p>Body</p>")})
 
@@ -62,6 +77,30 @@ def test_send_result_serializes_the_confirmed_recipients() -> None:
         "to": [{"name": None, "address": "to@example.com"}],
         "cc": [],
         "bcc": [{"name": "Blind", "address": "bcc@example.com"}],
+    }
+
+
+def test_draft_result_serializes_server_confirmed_identifiers() -> None:
+    result = MessageDraftResult(
+        user="DOMAIN\\agent",
+        message_id="draft-id",
+        change_key="draft-change-1",
+        folder_id="drafts-id",
+        subject="Report",
+        to=[],
+        cc=[],
+        bcc=[],
+    )
+
+    assert result.model_dump() == {
+        "user": "DOMAIN\\agent",
+        "message_id": "draft-id",
+        "change_key": "draft-change-1",
+        "folder_id": "drafts-id",
+        "subject": "Report",
+        "to": [],
+        "cc": [],
+        "bcc": [],
     }
 
 

@@ -5,6 +5,9 @@ from ews.commands.doctor import doctor
 from ews.commands.folder import list_folders
 from ews.commands.message import get_message, get_thread, list_messages
 from ews.commands.message_write import (
+    create_draft,
+    create_reply_all_draft,
+    create_reply_draft,
     mark_read,
     move_message,
     reply_all_to_message,
@@ -16,6 +19,9 @@ from ews.commands.sync import sync_mailbox
 from ews.commands.test_access import test_access
 
 __all__ = [
+    "create_draft",
+    "create_reply_all_draft",
+    "create_reply_draft",
     "get_message",
     "get_thread",
     "delete_password",

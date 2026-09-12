@@ -23,7 +23,7 @@ from ews.exchange import (
     EwsRejectedError,
     EwsServiceError,
 )
-from ews.models import MailboxAddress, OutgoingMessage, OutgoingReply, Profile
+from ews.models import DraftMessage, MailboxAddress, OutgoingMessage, OutgoingReply, Profile
 
 
 class FakeCredentials:
@@ -59,12 +59,29 @@ class FakeOutgoingMessage:
         self.subject = kwargs.get("subject")
         self.body = kwargs.get("body")
         self.save_copies: list[bool] = []
+        self.save_calls = 0
+        self.id: str | None = None
+        self.changekey: str | None = None
         FakeOutgoingMessage.instances.append(self)
 
     def send(self, *, save_copy: bool) -> None:
         if FakeOutgoingMessage.error is not None:
             raise FakeOutgoingMessage.error
         self.save_copies.append(save_copy)
+
+    def save(self) -> FakeOutgoingMessage:
+        if FakeOutgoingMessage.error is not None:
+            raise FakeOutgoingMessage.error
+        self.save_calls += 1
+        self.id = "draft-id"
+        self.changekey = "draft-change-1"
+        return self
+
+
+class FakeSavedDraft:
+    def __init__(self, *, message_id: str | None = "draft-id") -> None:
+        self.id = message_id
+        self.changekey = None if message_id is None else "draft-change-1"
 
 
 class FakeReply:
@@ -82,9 +99,14 @@ class FakeReply:
         self.cc_recipients = list(cc_recipients)
         self.bcc_recipients: list[FakeMailbox] = []
         self.save_copies: list[bool] = []
+        self.save_calls: list[object] = []
 
     def send(self, *, save_copy: bool) -> None:
         self.save_copies.append(save_copy)
+
+    def save(self, folder: object) -> FakeSavedDraft:
+        self.save_calls.append(folder)
+        return FakeSavedDraft()
 
 
 class FakeOriginal:
@@ -163,6 +185,7 @@ class FakeAccount:
 
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
+        self.drafts = FakeItemId("drafts-id")
         FakeAccount.last_instance = self
 
     def fetch(self, *, ids: Sequence[FakeItemId], only_fields: Sequence[str]) -> list[object]:
@@ -213,6 +236,37 @@ def test_send_message_uses_an_html_body(monkeypatch: MonkeyPatch) -> None:
     body = FakeOutgoingMessage.instances[-1].body
     assert isinstance(body, HTMLBody)
     assert str(body) == "<p>Body</p>"
+
+
+def test_save_message_draft_uses_save_only_and_returns_identifiers(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    _install(monkeypatch)
+    draft = DraftMessage.model_validate(
+        {
+            "subject": "Draft",
+            "body": {"content_type": "text", "content": "Body"},
+        }
+    )
+
+    result = EwsClient().save_message_draft(_profile(), SecretStr("secret"), draft)
+
+    outgoing = FakeOutgoingMessage.instances[-1]
+    account = FakeAccount.last_instance
+    assert account is not None
+    assert outgoing.kwargs["folder"] is account.drafts
+    assert outgoing.save_calls == 1
+    assert outgoing.save_copies == []
+    assert result.model_dump() == {
+        "user": "DOMAIN\\agent",
+        "message_id": "draft-id",
+        "change_key": "draft-change-1",
+        "folder_id": "drafts-id",
+        "subject": "Draft",
+        "to": [],
+        "cc": [],
+        "bcc": [],
+    }
 
 
 @pytest.mark.parametrize(
@@ -289,6 +343,31 @@ def test_reply_all_reports_every_original_recipient(monkeypatch: MonkeyPatch) ->
         "zoe@example.com",
     ]
     assert [address.address for address in result.cc] == ["cc@example.com"]
+
+
+@pytest.mark.parametrize("reply_all", [False, True])
+def test_save_reply_draft_uses_save_only_and_returns_identifiers(
+    monkeypatch: MonkeyPatch, reply_all: bool
+) -> None:
+    original = FakeOriginal(
+        author=FakeMailbox(email_address="author@example.com"),
+        to=[FakeMailbox(email_address="to@example.com")],
+    )
+    _install(monkeypatch, items=[original])
+
+    result = EwsClient().save_reply_draft(
+        _profile(), SecretStr("secret"), "message-id", _reply(None), reply_all=reply_all
+    )
+
+    account = FakeAccount.last_instance
+    assert account is not None
+    reply = original.created[0]
+    assert reply.save_calls == [account.drafts]
+    assert reply.save_copies == []
+    assert result.message_id == "draft-id"
+    assert result.change_key == "draft-change-1"
+    expected = ["to@example.com"] if reply_all else ["author@example.com"]
+    assert [address.address for address in result.to] == expected
 
 
 def test_reply_message_rejects_an_original_without_a_sender(monkeypatch: MonkeyPatch) -> None:

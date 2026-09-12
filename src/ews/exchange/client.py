@@ -43,6 +43,7 @@ from ews.models import (
     AttachmentMetadata,
     AttachmentSaveResult,
     ConnectionTestResult,
+    DraftMessage,
     FlagStatus,
     Folder,
     FolderChange,
@@ -55,6 +56,7 @@ from ews.models import (
     MessageChange,
     MessageChangeKind,
     MessageDetail,
+    MessageDraftResult,
     MessageMoveResult,
     MessageReadStateResult,
     MessageSendResult,
@@ -271,6 +273,33 @@ class EwsClient:
 
         return self._run_write(profile, password, operation)
 
+    def save_message_draft(
+        self, profile: Profile, password: SecretStr, message: DraftMessage
+    ) -> MessageDraftResult:
+        """Save a new message in the EWS Drafts folder without sending it."""
+
+        def operation(account: Any) -> MessageDraftResult:
+            drafts = account.drafts
+            outgoing = Message(
+                account=account,
+                folder=drafts,
+                to_recipients=_mailboxes(message.to),
+                cc_recipients=_mailboxes(message.cc),
+                bcc_recipients=_mailboxes(message.bcc),
+                subject=message.subject,
+                body=_outgoing_body(message.body),
+            )
+            saved = outgoing.save()
+            return _draft_result(
+                profile=profile,
+                saved=saved,
+                outgoing=outgoing,
+                folder_id=drafts.id,
+                subject=message.subject,
+            )
+
+        return self._run_write(profile, password, operation)
+
     def reply_message(
         self,
         profile: Profile,
@@ -299,6 +328,39 @@ class EwsClient:
                 to=_sorted_mail_addresses(outgoing.to_recipients),
                 cc=_sorted_mail_addresses(outgoing.cc_recipients),
                 bcc=_sorted_mail_addresses(outgoing.bcc_recipients),
+            )
+
+        return self._run_write(profile, password, operation)
+
+    def save_reply_draft(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        reply: OutgoingReply,
+        *,
+        reply_all: bool,
+    ) -> MessageDraftResult:
+        """Save a reply in the EWS Drafts folder without sending it."""
+
+        def operation(account: Any) -> MessageDraftResult:
+            original = _fetch_item(account, message_id, REPLY_FIELDS)
+            subject = _reply_subject(original.subject, reply.subject)
+            body = _outgoing_body(reply.body)
+            if reply_all:
+                outgoing = original.create_reply_all(subject, body)
+            else:
+                if original.author is None:
+                    raise EwsRejectedError("The original message has no sender to reply to")
+                outgoing = original.create_reply(subject, body)
+            drafts = account.drafts
+            saved = outgoing.save(drafts)
+            return _draft_result(
+                profile=profile,
+                saved=saved,
+                outgoing=outgoing,
+                folder_id=drafts.id,
+                subject=subject,
             )
 
         return self._run_write(profile, password, operation)
@@ -523,6 +585,28 @@ def _mail_addresses_from(addresses: Sequence[EmailStr]) -> list[MailboxAddress]:
 def _sorted_mail_addresses(mailboxes: Iterable[Any] | None) -> list[MailboxAddress]:
     addresses = _mail_addresses(mailboxes)
     return sorted(addresses, key=lambda address: address.address.casefold())
+
+
+def _draft_result(
+    *,
+    profile: Profile,
+    saved: Any,
+    outgoing: Any,
+    folder_id: Any,
+    subject: str,
+) -> MessageDraftResult:
+    if saved.id is None or saved.changekey is None:
+        raise EwsServiceError("EWS did not return identifiers for the saved draft")
+    return MessageDraftResult(
+        user=profile.user.username,
+        message_id=str(saved.id),
+        change_key=str(saved.changekey),
+        folder_id=str(folder_id),
+        subject=subject,
+        to=_sorted_mail_addresses(outgoing.to_recipients),
+        cc=_sorted_mail_addresses(outgoing.cc_recipients),
+        bcc=_sorted_mail_addresses(outgoing.bcc_recipients),
+    )
 
 
 def _folder_change(

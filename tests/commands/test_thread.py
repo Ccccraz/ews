@@ -15,11 +15,13 @@ from ews.config import PasswordStore, ProfileStore
 from ews.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
+    DraftMessage,
     FlagStatus,
     Folder,
     FolderSyncResult,
     MessageBody,
     MessageDetail,
+    MessageDraftResult,
     MessageMoveResult,
     MessageReadStateResult,
     MessageSendResult,
@@ -75,6 +77,12 @@ class ThreadGateway:
         del profile, password, message
         return self._unexpected("send_message")
 
+    def save_message_draft(
+        self, profile: Profile, password: SecretStr, message: DraftMessage
+    ) -> MessageDraftResult:
+        del profile, password, message
+        return self._unexpected("save_message_draft")
+
     def reply_message(
         self,
         profile: Profile,
@@ -86,6 +94,18 @@ class ThreadGateway:
     ) -> MessageSendResult:
         del profile, password, message_id, reply, reply_all
         return self._unexpected("reply_message")
+
+    def save_reply_draft(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        reply: OutgoingReply,
+        *,
+        reply_all: bool,
+    ) -> MessageDraftResult:
+        del profile, password, message_id, reply, reply_all
+        return self._unexpected("save_reply_draft")
 
     def set_read_state(
         self, profile: Profile, password: SecretStr, message_id: str, *, is_read: bool

@@ -8,7 +8,7 @@
 
 - **机器优先的输出**：除 `--help`/`--version` 外，每次调用只在 stdout 输出一个 JSON 对象；诊断信息一律走 stderr。
 - **本地优先的读取**：`sync` 把邮件同步进本地 SQLite 缓存，读命令只读缓存，因此不受网络抖动影响。
-- **受限且显式的写入**：只提供发送、回复、标记已读、移动和附件下载；**没有邮件或文件夹删除能力**。
+- **受限且显式的写入**：只提供发送、保存草稿、回复、标记已读、移动和附件下载；**没有邮件或文件夹删除能力**。
 - **凭据安全**：密码只存 macOS Keychain，绝不进入配置文件、命令行参数、输出或日志。
 
 ## 能力
@@ -19,7 +19,7 @@
 | 连通性诊断 | `test`、`doctor` |
 | 同步 | `sync`（增量，可续跑） |
 | 读取 | `folder list`、`message list`、`message get`、`message thread` |
-| 写入 | `message send`、`message reply`、`message reply-all`、`message mark-read`、`message move` |
+| 写入 | `message send`、`message reply`、`message reply-all`、`message draft create\|reply\|reply-all`、`message mark-read`、`message move` |
 | 附件 | `attachment save`（仅下载，流式，拒绝覆盖） |
 
 ## 环境要求
@@ -70,6 +70,9 @@ ews --user agent message thread <message-id>
 
 # 7. 回复：正文只写你要新增的内容，引用块由服务器生成
 "Thanks, will follow up tomorrow." | ews --user agent message reply-all <message-id> --body-file -
+
+# 8. 保存回复草稿供人工检查，不发送邮件
+"Draft response" | ews --user agent message draft reply <message-id> --body-file -
 ```
 
 `--user` 是全局选项，接受 NTLM 用户名或邮箱地址（大小写不敏感）。
@@ -88,6 +91,8 @@ ews --user agent message thread <message-id>
 | `message thread <id>` | 整串会话 | 是 | 是 |
 | `message send` | 发送新邮件 | 是 | 否 |
 | `message reply` / `reply-all <id>` | 回复 | 是 | 是 |
+| `message draft create` | 保存新邮件草稿 | 是 | 否 |
+| `message draft reply` / `reply-all <id>` | 保存回复草稿 | 是 | 是 |
 | `message mark-read <id> [--unread]` | 标记已读 / 未读 | 是 | 是 |
 | `message move <id> --folder <id\|name>` | 移动到其他文件夹 | 是 | 是 |
 | `attachment save <mid> <aid> --path <file>` | 流式保存附件 | 是 | 是 |
@@ -97,7 +102,7 @@ ews --user agent message thread <message-id>
 
 `message list` 的过滤器可任意组合（AND）：`--folder`、`--read-state read|unread|any`、`--sender`、`--subject-contains`、`--body-contains`、`--received-from`、`--received-before`，分页用 `--limit`（默认 50、最大 200）与 `--offset`。`message thread` 支持 `--limit`（默认 20、最大 200）与 `--offset`。
 
-写命令的正文通过 `--body-file <path>` 提供（`-` 表示 stdin），并用 `--content-type text|html`（默认 `text`）指定正文类型。
+写命令的正文通过 `--body-file <path>` 提供（`-` 表示 stdin），并用 `--content-type text|html`（默认 `text`）指定正文类型。`message draft create` 允许暂不提供任何收件人。
 
 ## 输出契约
 
@@ -169,6 +174,7 @@ username = "operator"
 - **stdout 只解析 JSON**，不要假设会有多行输出；诊断与进度类信息只出现在 stderr（`sync --progress` 除外）。
 - **按 `code` 与 `retryable` 决策**：`service_error` 可重试；`cache_not_ready` 应先 `sync`；`resource_not_found` 说明本地缓存里没有这条数据，同样先 `sync` 再看。
 - **写命令不做交互确认**：调用显式写命令即表示授权执行；需要用户同意时应在调用前确认。
+- **草稿命令永不发送**：`message draft create|reply|reply-all` 只保存到 Exchange Drafts；需要执行一次 `sync` 后才能通过本地读命令看到新草稿。
 - **没有删除能力**：CLI 不提供任何删除邮件或文件夹的命令，测试或误操作产生的邮件需要人工清理。
 - **附件只下载不覆盖**：`attachment save` 遇到已存在的目标文件返回 `destination_exists`/2，且没有 `--overwrite`；`kind="item"` 的内嵌邮件/日历附件返回 `invalid_argument`。
 - **引用块由服务器生成**：`message reply` / `reply-all` 只需提供你要新增的正文。
@@ -177,7 +183,7 @@ username = "operator"
 
 - 仅 macOS；支持多个独立邮箱 profile，但不支持共享邮箱与 impersonation，也没有默认或当前 profile。
 - 不支持 Autodiscover、自定义 CA、跳过 TLS 校验。
-- 首版不含：邮件删除、转发、草稿管理、发送附件、日历与联系人、MIME `.eml` 导出。
+- 首版不含：邮件删除、转发、修改/发送/删除已有草稿、草稿或发送附件、日历与联系人、MIME `.eml` 导出。
 - `folder list` 对没有 EWS distinguished name 的文件夹返回 `well_known_name: null`（例如自定义文件夹、主邮箱里名为 `Archive` 的文件夹），这些文件夹只能用 folder ID 选择。
 
 ## 开发
@@ -192,7 +198,7 @@ uv run pytest          # 启用了分支覆盖率，门槛 90%
 
 - 类型检查使用 Pyright **strict**；只有 exchangelib 所在的适配器模块局部关闭第三方缺失类型诊断。
 - 测试使用 fake gateway 隔离网络与 Keychain，因此可以在普通 CI 中运行。
-- 真实 EWS 验收无法在 CI 中运行：需要在企业网络内用真实邮箱手工执行（`doctor` 记录服务器版本，然后覆盖同步、分页、过滤、发送与回读、mark-read/reply/move、附件保存）。
+- 真实 EWS 验收无法在 CI 中运行：需要在企业网络内用真实邮箱手工执行（`doctor` 记录服务器版本，然后覆盖同步、分页、过滤、发送与回读、三类草稿保存、mark-read/reply/move、附件保存）。
 
 ## License
 

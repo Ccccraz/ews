@@ -7,8 +7,10 @@ from pydantic import SecretStr
 from ews.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
+    DraftMessage,
     FolderSyncResult,
     MessageDetail,
+    MessageDraftResult,
     MessageMoveResult,
     MessageReadStateResult,
     MessageSendResult,
@@ -47,6 +49,10 @@ class MailboxGateway(Protocol):
         self, profile: Profile, password: SecretStr, message: OutgoingMessage
     ) -> MessageSendResult: ...
 
+    def save_message_draft(
+        self, profile: Profile, password: SecretStr, message: DraftMessage
+    ) -> MessageDraftResult: ...
+
     def reply_message(
         self,
         profile: Profile,
@@ -56,6 +62,16 @@ class MailboxGateway(Protocol):
         *,
         reply_all: bool,
     ) -> MessageSendResult: ...
+
+    def save_reply_draft(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        reply: OutgoingReply,
+        *,
+        reply_all: bool,
+    ) -> MessageDraftResult: ...
 
     def set_read_state(
         self, profile: Profile, password: SecretStr, message_id: str, *, is_read: bool

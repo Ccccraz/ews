@@ -15,11 +15,13 @@ from ews.config import PasswordStore, ProfileStore
 from ews.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
+    DraftMessage,
     FlagStatus,
     Folder,
     FolderSyncResult,
     MessageBody,
     MessageDetail,
+    MessageDraftResult,
     MessageMoveResult,
     MessageReadStateResult,
     MessageSendResult,
@@ -73,6 +75,12 @@ class UnusedGateway:
         del profile, password, message
         raise AssertionError("Not used")
 
+    def save_message_draft(
+        self, profile: Profile, password: SecretStr, message: DraftMessage
+    ) -> MessageDraftResult:
+        del profile, password, message
+        raise AssertionError("Not used")
+
     def reply_message(
         self,
         profile: Profile,
@@ -82,6 +90,18 @@ class UnusedGateway:
         *,
         reply_all: bool,
     ) -> MessageSendResult:
+        del profile, password, message_id, reply, reply_all
+        raise AssertionError("Not used")
+
+    def save_reply_draft(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        reply: OutgoingReply,
+        *,
+        reply_all: bool,
+    ) -> MessageDraftResult:
         del profile, password, message_id, reply, reply_all
         raise AssertionError("Not used")
 
