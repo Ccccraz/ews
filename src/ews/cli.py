@@ -11,7 +11,11 @@ from ews.commands import (
     get_message,
     list_folders,
     list_messages,
+    password_status,
+    set_password,
     set_profile,
+    show_config,
+    show_config_path,
     sync_mailbox,
     test_access,
 )
@@ -26,15 +30,23 @@ commands = App(
 )
 folder = App(name="folder", help="Read mail folders.")
 message = App(name="message", help="Read messages.")
+config = App(name="config", help="Inspect configuration.")
+auth = App(name="auth", help="Manage authentication.")
 
 commands.command(set_profile, name="set")
 commands.command(test_access, name="test")
 commands.command(sync_mailbox, name="sync")
 commands.command(folder)
 commands.command(message)
+commands.command(config)
+commands.command(auth)
 folder.command(list_folders, name="list")
 message.command(list_messages, name="list")
 message.command(get_message, name="get")
+config.command(show_config, name="show")
+config.command(show_config_path, name="path")
+auth.command(set_password, name="set-password")
+auth.command(password_status, name="status")
 
 app = commands.meta
 app.help = commands.help
