@@ -61,7 +61,7 @@ class MessageSummary(ContractModel):
 
 
 class MessageBody(ContractModel):
-    """The original EWS message body."""
+    """A message body with its EWS content type."""
 
     content_type: Literal["text", "html"]
     content: str

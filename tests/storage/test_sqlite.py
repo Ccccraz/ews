@@ -178,6 +178,31 @@ def test_mailbox_must_not_be_empty(tmp_path: Path) -> None:
         store.list_folders("  ")
 
 
+def test_folder_selectors_resolve_well_known_names_and_ids(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.replace_folders(
+        "agent@example.com",
+        [
+            _folder("inbox-id", "Inbox"),
+            Folder(
+                id="sent-id",
+                parent_id=None,
+                name="Sent Items",
+                well_known_name="sentitems",
+                total_count=3,
+                unread_count=0,
+            ),
+        ],
+    )
+
+    assert store.resolve_folder_id("agent@example.com", "INBOX") == "inbox-id"
+    assert store.resolve_folder_id("agent@example.com", "SentItems") == "sent-id"
+    assert store.resolve_folder_id("agent@example.com", "sent-id") == "sent-id"
+    assert store.resolve_folder_id("agent@example.com", "missing") is None
+    assert store.folder_exists("agent@example.com", "sentitems") is True
+    assert store.folder_exists("agent@example.com", "missing") is False
+
+
 def test_local_query_combines_filters_normalizes_utc_and_uses_limit_plus_one(
     tmp_path: Path,
 ) -> None:

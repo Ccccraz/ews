@@ -21,7 +21,12 @@ from ews.models import (
     MessageGetResult,
     MessageListQuery,
     MessageListResult,
+    MessageMoveResult,
+    MessageReadStateResult,
+    MessageSendResult,
     MessageSyncCounts,
+    OutgoingMessage,
+    OutgoingReply,
     Pagination,
     Profile,
 )
@@ -188,6 +193,53 @@ class MailboxApplicationService:
         if message is None:
             raise MessageNotFoundError(f"Message not found: {message_id}")
         return MessageGetResult(user=profile.user.username, message=message)
+
+    def send_message(self, selected_user: str, message: OutgoingMessage) -> MessageSendResult:
+        """Send one new message; the local cache is left for the next synchronization."""
+        profile = self._load_profile(selected_user)
+        password = self._password_store.get(profile)
+        return self._gateway.send_message(profile, password, message)
+
+    def reply_to_message(
+        self,
+        selected_user: str,
+        message_id: str,
+        reply: OutgoingReply,
+        *,
+        reply_all: bool,
+    ) -> MessageSendResult:
+        """Reply to one cached message without changing the local cache."""
+        profile = self._load_profile(selected_user)
+        self._require_cached_message(profile, message_id)
+        password = self._password_store.get(profile)
+        return self._gateway.reply_message(
+            profile, password, message_id, reply, reply_all=reply_all
+        )
+
+    def set_read_state(
+        self, selected_user: str, message_id: str, *, is_read: bool
+    ) -> MessageReadStateResult:
+        """Update one cached message's remote read state without changing the local cache."""
+        profile = self._load_profile(selected_user)
+        self._require_cached_message(profile, message_id)
+        password = self._password_store.get(profile)
+        return self._gateway.set_read_state(profile, password, message_id, is_read=is_read)
+
+    def move_message(self, selected_user: str, message_id: str, folder: str) -> MessageMoveResult:
+        """Move one cached message into a cached folder without changing the local cache."""
+        profile = self._load_profile(selected_user)
+        self._require_cached_message(profile, message_id)
+        folder_id = self._store.resolve_folder_id(str(profile.user.mailbox), folder)
+        if folder_id is None:
+            raise FolderNotFoundError(f"Folder not found: {folder}")
+        password = self._password_store.get(profile)
+        return self._gateway.move_message(profile, password, message_id, folder_id)
+
+    def _require_cached_message(self, profile: Profile, message_id: str) -> None:
+        mailbox = str(profile.user.mailbox)
+        self._store.require_ready(mailbox)
+        if self._store.get_message(mailbox, message_id) is None:
+            raise MessageNotFoundError(f"Message not found: {message_id}")
 
     def _fetch_in_batches(
         self,

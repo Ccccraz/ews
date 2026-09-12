@@ -7,7 +7,12 @@ from ews.models import (
     ConnectionTestResult,
     FolderSyncResult,
     MessageDetail,
+    MessageMoveResult,
+    MessageReadStateResult,
+    MessageSendResult,
     MessageSyncResult,
+    OutgoingMessage,
+    OutgoingReply,
     Profile,
 )
 
@@ -35,3 +40,25 @@ class MailboxGateway(Protocol):
         password: SecretStr,
         message_ids: Sequence[tuple[str, str]],
     ) -> list[MessageDetail]: ...
+
+    def send_message(
+        self, profile: Profile, password: SecretStr, message: OutgoingMessage
+    ) -> MessageSendResult: ...
+
+    def reply_message(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        reply: OutgoingReply,
+        *,
+        reply_all: bool,
+    ) -> MessageSendResult: ...
+
+    def set_read_state(
+        self, profile: Profile, password: SecretStr, message_id: str, *, is_read: bool
+    ) -> MessageReadStateResult: ...
+
+    def move_message(
+        self, profile: Profile, password: SecretStr, message_id: str, folder_id: str
+    ) -> MessageMoveResult: ...

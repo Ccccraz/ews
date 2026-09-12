@@ -414,10 +414,14 @@ class SqliteMailboxStore:
             raise MailboxStoreError("Unable to list cached messages") from error
 
     def folder_exists(self, mailbox: str, folder: str) -> bool:
+        return self.resolve_folder_id(mailbox, folder) is not None
+
+    def resolve_folder_id(self, mailbox: str, folder: str) -> str | None:
+        """Resolve a folder selector to its cached EWS folder ID."""
         mailbox_key = _mailbox_key(mailbox)
         try:
             with self._session() as session:
-                return self._resolve_folder_id(session, mailbox_key, folder) is not None
+                return self._resolve_folder_id(session, mailbox_key, folder)
         except SQLAlchemyError as error:
             raise MailboxStoreError("Unable to resolve cached folder") from error
 
@@ -476,14 +480,14 @@ class SqliteMailboxStore:
 
     @staticmethod
     def _resolve_folder_id(session: Session, mailbox: str, folder: str) -> str | None:
-        if folder.casefold() == "inbox":
-            row = session.exec(
-                select(FolderRecord).where(
-                    col(FolderRecord.mailbox) == mailbox,
-                    func.lower(col(FolderRecord.well_known_name)) == "inbox",
-                )
-            ).first()
-            return None if row is None else row.id
+        row = session.exec(
+            select(FolderRecord).where(
+                col(FolderRecord.mailbox) == mailbox,
+                func.lower(col(FolderRecord.well_known_name)) == folder.casefold(),
+            )
+        ).first()
+        if row is not None:
+            return row.id
         return folder if session.get(FolderRecord, (mailbox, folder)) is not None else None
 
     @staticmethod

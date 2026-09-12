@@ -17,7 +17,12 @@ from ews.config import (
     ProfileNotFoundError,
 )
 from ews.contracts import Error, ErrorEnvelope, SuccessEnvelope, write_contract
-from ews.exchange import EwsAuthenticationError, EwsServiceError
+from ews.exchange import (
+    EwsAuthenticationError,
+    EwsNotFoundError,
+    EwsRejectedError,
+    EwsServiceError,
+)
 from ews.storage import MailboxCacheNotReadyError, MailboxStoreError
 
 
@@ -52,6 +57,39 @@ def run_read[ResultT: BaseModel](
             4,
         )
     except (FolderNotFoundError, MessageNotFoundError) as error:
+        return fail("resource_not_found", str(error), 4)
+    except MailboxStoreError as error:
+        return fail("cache_error", str(error), 2)
+    except EwsServiceError as error:
+        return fail("service_error", str(error), 5, retryable=True)
+
+    write_contract(SuccessEnvelope(data=result))
+    return 0
+
+
+def run_write[ResultT: BaseModel](
+    context: CommandContext, operation: Callable[[str], ResultT]
+) -> int:
+    """Run a write use case and map expected failures to the CLI contract."""
+    if context.user is None:
+        return fail("invalid_argument", "--user is required", 2)
+    try:
+        result = operation(context.user)
+    except (ValidationError, EwsRejectedError) as error:
+        return fail("invalid_argument", str(error), 2)
+    except (ProfileNotFoundError, InvalidProfileError, OSError) as error:
+        return fail("configuration_error", str(error), 2)
+    except (PasswordNotFoundError, PasswordStoreError, EwsAuthenticationError) as error:
+        return fail("authentication_error", str(error), 3)
+    except UserNotFoundError as error:
+        return fail("profile_not_found", str(error), 4)
+    except MailboxCacheNotReadyError:
+        return fail(
+            "cache_not_ready",
+            f"Mailbox cache is not ready; run ews --user {context.user} sync",
+            4,
+        )
+    except (FolderNotFoundError, MessageNotFoundError, EwsNotFoundError) as error:
         return fail("resource_not_found", str(error), 4)
     except MailboxStoreError as error:
         return fail("cache_error", str(error), 2)

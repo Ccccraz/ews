@@ -7,10 +7,16 @@ from exchangelib import DELEGATE, NTLM, Account, Configuration, Credentials
 from exchangelib.attachments import FileAttachment
 from exchangelib.errors import (
     ErrorAccessDenied,
+    ErrorFolderNotFound,
+    ErrorInvalidFolderId,
+    ErrorInvalidIdEmpty,
     ErrorInvalidIdMalformed,
+    ErrorInvalidRecipients,
     ErrorInvalidSyncStateData,
     ErrorItemNotFound,
+    ErrorMessageSizeExceeded,
     ErrorNonExistentMailbox,
+    ErrorSendAsDenied,
     EWSError,
     UnauthorizedError,
 )
@@ -19,8 +25,8 @@ from exchangelib.fields import InvalidField
 from exchangelib.folders import Folder as EwsFolder
 from exchangelib.items import Message
 from exchangelib.items.calendar_item import BaseMeetingItem
-from exchangelib.properties import HTMLBody
-from pydantic import SecretStr, ValidationError
+from exchangelib.properties import HTMLBody, ItemId, Mailbox
+from pydantic import EmailStr, SecretStr, ValidationError
 
 from ews.application import InvalidSyncStateError
 from ews.models import (
@@ -37,7 +43,12 @@ from ews.models import (
     MessageChange,
     MessageChangeKind,
     MessageDetail,
+    MessageMoveResult,
+    MessageReadStateResult,
+    MessageSendResult,
     MessageSyncResult,
+    OutgoingMessage,
+    OutgoingReply,
     Profile,
 )
 
@@ -63,6 +74,7 @@ DETAIL_FIELDS = (
     "attachments",
 )
 FOLDER_SYNC_FIELDS = ("parent_folder_id", "total_count", "unread_count", "is_hidden")
+REPLY_FIELDS = ("subject", "author", "to_recipients", "cc_recipients", "bcc_recipients")
 MAIL_FOLDER_CLASSES = {"IPF.Note", "IPF.Note.OutlookHomepage", "IPF.StickyNote"}
 MAIL_FOLDER_WELL_KNOWN_NAMES = {"conversationhistory"}
 MAIL_NAVIGATION_EXCLUDED_WELL_KNOWN_NAMES = {
@@ -82,6 +94,14 @@ class IsHidden(ExtendedProperty):
 
 class EwsAuthenticationError(Exception):
     """Raised when EWS rejects the configured identity or credentials."""
+
+
+class EwsNotFoundError(Exception):
+    """Raised when EWS cannot find a message or folder named by the caller."""
+
+
+class EwsRejectedError(Exception):
+    """Raised when EWS rejects the requested mailbox change as invalid."""
 
 
 class EwsServiceError(Exception):
@@ -181,6 +201,99 @@ class EwsClient:
 
         return self._run(profile, password, operation)
 
+    def send_message(
+        self, profile: Profile, password: SecretStr, message: OutgoingMessage
+    ) -> MessageSendResult:
+        """Send a new message and keep the EWS Sent copy."""
+
+        def operation(account: Any) -> MessageSendResult:
+            outgoing = Message(
+                account=account,
+                to_recipients=_mailboxes(message.to),
+                cc_recipients=_mailboxes(message.cc),
+                bcc_recipients=_mailboxes(message.bcc),
+                subject=message.subject,
+                body=_outgoing_body(message.body),
+            )
+            outgoing.send(save_copy=True)
+            return MessageSendResult(
+                user=profile.user.username,
+                subject=message.subject,
+                to=_mail_addresses_from(message.to),
+                cc=_mail_addresses_from(message.cc),
+                bcc=_mail_addresses_from(message.bcc),
+            )
+
+        return self._run_write(profile, password, operation)
+
+    def reply_message(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        reply: OutgoingReply,
+        *,
+        reply_all: bool,
+    ) -> MessageSendResult:
+        """Reply to one message and keep the EWS Sent copy."""
+
+        def operation(account: Any) -> MessageSendResult:
+            original = _fetch_item(account, message_id, REPLY_FIELDS)
+            subject = _reply_subject(original.subject, reply.subject)
+            body = _outgoing_body(reply.body)
+            if reply_all:
+                outgoing = original.create_reply_all(subject, body)
+            else:
+                if original.author is None:
+                    raise EwsRejectedError("The original message has no sender to reply to")
+                outgoing = original.create_reply(subject, body)
+            outgoing.send(save_copy=True)
+            return MessageSendResult(
+                user=profile.user.username,
+                subject=subject,
+                to=_sorted_mail_addresses(outgoing.to_recipients),
+                cc=_sorted_mail_addresses(outgoing.cc_recipients),
+                bcc=_sorted_mail_addresses(outgoing.bcc_recipients),
+            )
+
+        return self._run_write(profile, password, operation)
+
+    def set_read_state(
+        self, profile: Profile, password: SecretStr, message_id: str, *, is_read: bool
+    ) -> MessageReadStateResult:
+        """Update the read state of one message."""
+
+        def operation(account: Any) -> MessageReadStateResult:
+            item = _fetch_item(account, message_id, ())
+            item.is_read = is_read
+            item.save(update_fields=["is_read"])
+            return MessageReadStateResult(
+                user=profile.user.username,
+                message_id=str(item.id),
+                change_key=str(item.changekey),
+                is_read=bool(item.is_read),
+            )
+
+        return self._run_write(profile, password, operation)
+
+    def move_message(
+        self, profile: Profile, password: SecretStr, message_id: str, folder_id: str
+    ) -> MessageMoveResult:
+        """Move one message into another folder."""
+
+        def operation(account: Any) -> MessageMoveResult:
+            item = _fetch_item(account, message_id, ())
+            item.move(_folder_from_id(account, folder_id))
+            return MessageMoveResult(
+                user=profile.user.username,
+                previous_message_id=message_id,
+                message_id=str(item.id),
+                change_key=str(item.changekey),
+                folder_id=folder_id,
+            )
+
+        return self._run_write(profile, password, operation)
+
     @staticmethod
     def _run[ResultT](
         profile: Profile,
@@ -188,23 +301,7 @@ class EwsClient:
         operation: Callable[[Any], ResultT],
     ) -> ResultT:
         try:
-            _ensure_folder_extensions()
-            credentials = Credentials(
-                username=profile.user.username,
-                password=password.get_secret_value(),
-            )
-            configuration = Configuration(
-                service_endpoint=str(profile.server.endpoint),
-                credentials=credentials,
-                auth_type=NTLM,
-            )
-            account = Account(
-                primary_smtp_address=str(profile.user.mailbox),
-                config=configuration,
-                autodiscover=False,
-                access_type=DELEGATE,
-            )
-            return operation(account)
+            return _with_account(profile, password, operation)
         except ErrorInvalidSyncStateData as error:
             raise InvalidSyncStateError("EWS synchronization state is no longer valid") from error
         except (UnauthorizedError, ErrorAccessDenied, ErrorNonExistentMailbox) as error:
@@ -217,6 +314,96 @@ class EwsClient:
             raise EwsServiceError("Unable to access the EWS service") from error
         except (AttributeError, TypeError, ValueError, ValidationError) as error:
             raise EwsServiceError("EWS returned data that could not be normalized") from error
+
+    @staticmethod
+    def _run_write[ResultT](
+        profile: Profile,
+        password: SecretStr,
+        operation: Callable[[Any], ResultT],
+    ) -> ResultT:
+        try:
+            return _with_account(profile, password, operation)
+        except (
+            UnauthorizedError,
+            ErrorAccessDenied,
+            ErrorNonExistentMailbox,
+            ErrorSendAsDenied,
+        ) as error:
+            raise EwsAuthenticationError(
+                "EWS rejected the configured credentials or mailbox"
+            ) from error
+        except (
+            ErrorItemNotFound,
+            ErrorInvalidIdMalformed,
+            ErrorInvalidIdEmpty,
+            ErrorFolderNotFound,
+            ErrorInvalidFolderId,
+        ) as error:
+            raise EwsNotFoundError("EWS could not find the requested mailbox resource") from error
+        except (ErrorInvalidRecipients, ErrorMessageSizeExceeded) as error:
+            raise EwsRejectedError("EWS rejected the requested mailbox change") from error
+        except EWSError as error:
+            raise EwsServiceError("Unable to access the EWS service") from error
+        except (AttributeError, TypeError, ValueError, ValidationError) as error:
+            raise EwsServiceError("EWS returned data that could not be normalized") from error
+
+
+def _with_account[ResultT](
+    profile: Profile,
+    password: SecretStr,
+    operation: Callable[[Any], ResultT],
+) -> ResultT:
+    _ensure_folder_extensions()
+    credentials = Credentials(
+        username=profile.user.username,
+        password=password.get_secret_value(),
+    )
+    configuration = Configuration(
+        service_endpoint=str(profile.server.endpoint),
+        credentials=credentials,
+        auth_type=NTLM,
+    )
+    account = Account(
+        primary_smtp_address=str(profile.user.mailbox),
+        config=configuration,
+        autodiscover=False,
+        access_type=DELEGATE,
+    )
+    return operation(account)
+
+
+def _fetch_item(account: Any, message_id: str, only_fields: Sequence[str]) -> Any:
+    for item in account.fetch(ids=[ItemId(id=message_id)], only_fields=list(only_fields)):
+        if isinstance(item, Exception):
+            raise item
+        return item
+    raise EwsNotFoundError("EWS did not return the requested message")
+
+
+def _mailboxes(addresses: Sequence[EmailStr]) -> list[Any]:
+    return [Mailbox(email_address=str(address)) for address in addresses]
+
+
+def _outgoing_body(body: MessageBody) -> Any:
+    return HTMLBody(body.content) if body.content_type == "html" else body.content
+
+
+def _reply_subject(original_subject: Any, requested: str | None) -> str:
+    if requested is not None:
+        return requested
+    subject = "" if original_subject is None else str(original_subject)
+    if not subject:
+        return ""
+    return subject if subject.casefold().startswith("re:") else f"RE: {subject}"
+
+
+def _mail_addresses_from(addresses: Sequence[EmailStr]) -> list[MailboxAddress]:
+    return [MailboxAddress(address=str(address)) for address in addresses]
+
+
+def _sorted_mail_addresses(mailboxes: Iterable[Any] | None) -> list[MailboxAddress]:
+    addresses = _mail_addresses(mailboxes)
+    return sorted(addresses, key=lambda address: address.address.casefold())
 
 
 def _folder_change(kind: str, raw_folder: Any) -> FolderChange | None:
