@@ -1,4 +1,5 @@
 from ews.models.connection_test import ConnectionTestResult
+from ews.models.doctor import DoctorCheck, DoctorResult
 from ews.models.mailbox import (
     AttachmentMetadata,
     Folder,
@@ -28,11 +29,14 @@ from ews.models.sync import (
     MessageSyncCounts,
     MessageSyncResult,
 )
+from ews.models.tls import TlsCheckResult
 from ews.models.user import User
 
 __all__ = [
     "AttachmentMetadata",
     "ConnectionTestResult",
+    "DoctorCheck",
+    "DoctorResult",
     "Folder",
     "FolderListResult",
     "FolderChange",
@@ -57,5 +61,6 @@ __all__ = [
     "Profile",
     "ReadState",
     "Server",
+    "TlsCheckResult",
     "User",
 ]

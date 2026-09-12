@@ -9,6 +9,7 @@ from ews import __version__
 from ews.application import MailboxApplicationService
 from ews.commands import (
     delete_password,
+    doctor,
     get_message,
     list_folders,
     list_messages,
@@ -23,6 +24,7 @@ from ews.commands import (
 from ews.commands.context import CommandContext
 from ews.config import PasswordStore, ProfileStore
 from ews.exchange import EwsClient
+from ews.system import SystemTlsProbe
 
 commands = App(
     name="ews",
@@ -37,6 +39,7 @@ auth = App(name="auth", help="Manage authentication.")
 commands.command(set_profile, name="set")
 commands.command(test_access, name="test")
 commands.command(sync_mailbox, name="sync")
+commands.command(doctor, name="doctor")
 commands.command(folder)
 commands.command(message)
 commands.command(config)
@@ -71,7 +74,12 @@ def launch(
 def _build_context(user: str | None) -> CommandContext:
     return CommandContext(
         user=user,
-        service=MailboxApplicationService(ProfileStore(), PasswordStore(), EwsClient()),
+        service=MailboxApplicationService(
+            ProfileStore(),
+            PasswordStore(),
+            EwsClient(),
+            tls_probe=SystemTlsProbe(),
+        ),
     )
 
 

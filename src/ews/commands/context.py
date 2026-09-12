@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
 
 from ews.application import (
     FolderNotFoundError,
@@ -62,7 +62,23 @@ def run_read[ResultT: BaseModel](
     return 0
 
 
-def fail(code: str, message: str, exit_code: int, *, retryable: bool = False) -> int:
+def fail(
+    code: str,
+    message: str,
+    exit_code: int,
+    *,
+    retryable: bool = False,
+    details: dict[str, JsonValue] | None = None,
+) -> int:
     """Write one error envelope and return its process exit code."""
-    write_contract(ErrorEnvelope(error=Error(code=code, message=message, retryable=retryable)))
+    write_contract(
+        ErrorEnvelope(
+            error=Error(
+                code=code,
+                message=message,
+                details={} if details is None else details,
+                retryable=retryable,
+            )
+        )
+    )
     return exit_code
