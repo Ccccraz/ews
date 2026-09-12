@@ -11,6 +11,7 @@ from ews.commands import (
     delete_password,
     doctor,
     get_message,
+    get_thread,
     list_folders,
     list_messages,
     mark_read,
@@ -55,6 +56,7 @@ commands.command(auth)
 folder.command(list_folders, name="list")
 message.command(list_messages, name="list")
 message.command(get_message, name="get")
+message.command(get_thread, name="thread")
 message.command(send_message, name="send")
 message.command(reply_to_message, name="reply")
 message.command(reply_all_to_message, name="reply-all")

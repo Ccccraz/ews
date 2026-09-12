@@ -28,16 +28,34 @@ from ews.models import (
     MessageMoveResult,
     MessageReadStateResult,
     MessageSendResult,
+    MessageSummary,
     MessageSyncCounts,
+    MessageThreadQuery,
+    MessageThreadResult,
     OutgoingMessage,
     OutgoingReply,
     Pagination,
     Profile,
+    ThreadMessage,
 )
 from ews.storage import SqliteMailboxStore
 from ews.system import SystemTlsProbe
 
 _GET_ITEM_BATCH_SIZE = 10
+
+
+def _thread_message(message: MessageDetail, folder_names: dict[str, str]) -> ThreadMessage:
+    return ThreadMessage(
+        **message.model_dump(
+            include=set(MessageSummary.model_fields),
+        ),
+        folder_name=folder_names.get(message.parent_folder_id, ""),
+        to=message.to,
+        cc=message.cc,
+        attachments=message.attachments,
+        body=message.body,
+        text_body=message.text_body,
+    )
 
 
 class UserNotFoundError(Exception):
@@ -191,12 +209,42 @@ class MailboxApplicationService:
 
     def get_message(self, selected_user: str, message_id: str) -> MessageGetResult:
         profile = self._load_profile(selected_user)
-        mailbox = str(profile.user.mailbox)
-        self._store.require_ready(mailbox)
-        message = self._store.get_message(mailbox, message_id)
-        if message is None:
-            raise MessageNotFoundError(f"Message not found: {message_id}")
+        message = self._require_cached_message(profile, message_id)
         return MessageGetResult(user=profile.user.username, message=message)
+
+    def get_thread(
+        self, selected_user: str, message_id: str, query: MessageThreadQuery
+    ) -> MessageThreadResult:
+        """Return one cached conversation across every folder in reading order."""
+        profile = self._load_profile(selected_user)
+        mailbox = str(profile.user.mailbox)
+        seed = self._require_cached_message(profile, message_id)
+        if seed.conversation_id is None:
+            messages = [seed]
+            has_more = False
+            message_count = 1
+        else:
+            message_count = self._store.count_thread(mailbox, seed.conversation_id)
+            messages, has_more = self._store.list_thread(
+                mailbox,
+                seed.conversation_id,
+                offset=query.offset,
+                limit=query.limit,
+            )
+        folder_names = {folder.id: folder.name for folder in self._store.list_folders(mailbox)}
+        return MessageThreadResult(
+            user=profile.user.username,
+            conversation_id=seed.conversation_id,
+            conversation_topic=seed.conversation_topic,
+            message_count=message_count,
+            messages=[_thread_message(message, folder_names) for message in messages],
+            pagination=Pagination(
+                offset=query.offset,
+                limit=query.limit,
+                has_more=has_more,
+                next_offset=query.offset + query.limit if has_more else None,
+            ),
+        )
 
     def send_message(self, selected_user: str, message: OutgoingMessage) -> MessageSendResult:
         """Send one new message; the local cache is left for the next synchronization."""

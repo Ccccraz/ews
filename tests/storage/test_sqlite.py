@@ -5,9 +5,10 @@ import pytest
 from sqlalchemy import URL
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import NullPool
-from sqlmodel import Session, create_engine
+from sqlmodel import Session, create_engine, select
 
 from ews.models import (
+    FlagStatus,
     Folder,
     FolderChange,
     FolderChangeKind,
@@ -23,7 +24,12 @@ from ews.storage import (
     UnsupportedCacheSchemaVersionError,
     default_cache_path,
 )
-from ews.storage.sqlite import CacheMetadataRecord, MessageRecord
+from ews.storage.sqlite import (
+    CacheMetadataRecord,
+    ItemSyncStateRecord,
+    MailboxStateRecord,
+    MessageRecord,
+)
 
 
 def test_default_cache_path_uses_config_directory(tmp_path: Path) -> None:
@@ -44,18 +50,18 @@ def test_initialize_is_explicit_and_idempotent(tmp_path: Path) -> None:
     with _session(store) as session:
         metadata = session.get(CacheMetadataRecord, "schema_version")
         assert metadata is not None
-        assert metadata.value == "2"
+        assert metadata.value == "3"
 
 
 def test_initialize_rejects_unknown_schema_version(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    _set_schema_version(store, "3")
+    _set_schema_version(store, "9")
 
-    with pytest.raises(UnsupportedCacheSchemaVersionError, match="version: 3"):
+    with pytest.raises(UnsupportedCacheSchemaVersionError, match="version: 9"):
         store.initialize()
 
 
-def test_initialize_migrates_v1_without_marking_mailbox_ready(tmp_path: Path) -> None:
+def test_initialize_rebuilds_v1_without_marking_mailbox_ready(tmp_path: Path) -> None:
     store = _store(tmp_path)
     _set_schema_version(store, "1")
 
@@ -64,9 +70,41 @@ def test_initialize_migrates_v1_without_marking_mailbox_ready(tmp_path: Path) ->
     with _session(store) as session:
         metadata = session.get(CacheMetadataRecord, "schema_version")
         assert metadata is not None
-        assert metadata.value == "2"
+        assert metadata.value == "3"
     with pytest.raises(MailboxCacheNotReadyError):
         store.require_ready("agent@example.com")
+
+
+def test_initialize_rebuilds_a_v2_cache_and_drops_cached_messages(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    folder = _folder("inbox-id", "Inbox")
+    store.replace_folders("agent@example.com", [folder])
+    message = _message()
+    store.upsert_messages("agent@example.com", [message])
+    store.apply_message_changes(
+        "agent@example.com",
+        folder.id,
+        [],
+        {},
+        "item-state-1",
+        reset=False,
+    )
+    store.mark_ready("agent@example.com")
+    _set_schema_version(store, "2")
+
+    with pytest.raises(MailboxCacheNotReadyError):
+        store.require_ready("agent@example.com")
+
+    store.initialize()
+
+    with _session(store) as session:
+        metadata = session.get(CacheMetadataRecord, "schema_version")
+        assert metadata is not None
+        assert metadata.value == "3"
+        assert session.exec(select(MessageRecord)).all() == []
+        assert session.exec(select(ItemSyncStateRecord)).all() == []
+        assert session.exec(select(MailboxStateRecord)).all() == []
+    assert store.list_folders("agent@example.com") == [folder]
 
 
 def test_replace_folders_preserves_order_and_isolates_mailboxes(tmp_path: Path) -> None:
@@ -165,9 +203,9 @@ def test_get_message_rejects_corrupt_nested_json(tmp_path: Path) -> None:
 
 def test_operations_reject_unknown_schema_version(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    _set_schema_version(store, "3")
+    _set_schema_version(store, "9")
 
-    with pytest.raises(UnsupportedCacheSchemaVersionError, match="version: 3"):
+    with pytest.raises(UnsupportedCacheSchemaVersionError, match="version: 9"):
         store.list_folders("agent@example.com")
 
 
@@ -406,6 +444,111 @@ def _session(store: SqliteMailboxStore) -> Session:
     database_url = URL.create("sqlite", database=str(store.path))
     engine = create_engine(database_url, poolclass=NullPool)
     return Session(engine)
+
+
+def test_message_conversation_fields_round_trip(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    folder = _folder("inbox-id", "Inbox")
+    store.replace_folders("agent@example.com", [folder])
+    message = _message().model_copy(
+        update={
+            "conversation_id": "conversation-1",
+            "conversation_topic": "mxbi project",
+            "conversation_index": "01" * 27,
+            "conversation_depth": 1,
+            "text_body": "Plain body",
+            "references": "<root@example.com>",
+            "is_draft": True,
+            "categories": ["Project", "Urgent"],
+            "flag_status": FlagStatus.FLAGGED,
+        }
+    )
+
+    store.upsert_messages("agent@example.com", [message])
+    summary, _ = store.list_messages("agent@example.com", MessageListQuery.model_validate({}))
+    stored = store.get_message("agent@example.com", message.id)
+
+    assert summary[0].conversation_id == "conversation-1"
+    assert summary[0].conversation_topic == "mxbi project"
+    assert summary[0].conversation_index == "01" * 27
+    assert summary[0].conversation_depth == 1
+    assert summary[0].is_draft is True
+    assert summary[0].categories == ["Project", "Urgent"]
+    assert summary[0].flag_status is FlagStatus.FLAGGED
+    assert stored is not None
+    assert stored.text_body == "Plain body"
+    assert stored.references == "<root@example.com>"
+
+
+def test_message_without_conversation_keeps_nullable_defaults(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.replace_folders("agent@example.com", [_folder("inbox-id", "Inbox")])
+    store.upsert_messages("agent@example.com", [_message()])
+
+    stored = store.get_message("agent@example.com", "message-id")
+
+    assert stored is not None
+    assert stored.conversation_id is None
+    assert stored.conversation_depth is None
+    assert stored.text_body is None
+    assert stored.references is None
+    assert stored.categories == []
+    assert stored.flag_status is FlagStatus.NONE
+
+
+def test_thread_query_spans_folders_in_reading_order(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    inbox = _folder("inbox-id", "Inbox")
+    sent = Folder(
+        id="sent-id",
+        parent_id=None,
+        name="Sent Items",
+        well_known_name="sentitems",
+        total_count=0,
+        unread_count=0,
+    )
+    store.replace_folders("agent@example.com", [inbox, sent])
+    other_mailbox = _message(message_id="elsewhere").model_copy(
+        update={"conversation_id": "conversation-1"}
+    )
+    root = _message(message_id="root").model_copy(
+        update={
+            "conversation_id": "conversation-1",
+            "conversation_depth": 0,
+            "conversation_index": "01" * 22,
+        }
+    )
+    reply = _message(message_id="reply").model_copy(
+        update={
+            "parent_folder_id": "sent-id",
+            "conversation_id": "conversation-1",
+            "conversation_depth": 1,
+            "received_at": datetime.fromisoformat("2026-09-13T08:00:00+00:00"),
+        }
+    )
+    unrelated = _message(message_id="unrelated").model_copy(
+        update={"conversation_id": "conversation-2"}
+    )
+    store.upsert_messages("agent@example.com", [reply, unrelated, root])
+    store.upsert_messages("other@example.com", [other_mailbox])
+
+    count = store.count_thread("agent@example.com", "conversation-1")
+    first_page, more = store.list_thread("agent@example.com", "conversation-1", offset=0, limit=1)
+    second_page, second_more = store.list_thread(
+        "agent@example.com", "conversation-1", offset=1, limit=1
+    )
+    beyond, beyond_more = store.list_thread(
+        "agent@example.com", "conversation-1", offset=5, limit=1
+    )
+
+    assert count == 2
+    assert [message.id for message in first_page] == ["root"]
+    assert more is True
+    assert [message.id for message in second_page] == ["reply"]
+    assert second_page[0].parent_folder_id == "sent-id"
+    assert second_more is False
+    assert beyond == []
+    assert beyond_more is False
 
 
 def _folder(folder_id: str, name: str, *, parent_id: str | None = None) -> Folder:
