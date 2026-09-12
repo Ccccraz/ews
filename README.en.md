@@ -187,11 +187,12 @@ The old `$HOME/.config/taskseed/ews/profile.toml` is neither read nor migrated a
 
 - **Parse JSON from stdout only** and do not assume line counts; diagnostics and progress appear on stderr (`sync --progress` being the exception).
 - **Decide from `code` and `retryable`**: `service_error` may be retried; `cache_not_ready` means run `sync` first; `resource_not_found` means the local cache does not hold that item yet — run `sync` and look again.
-- **Write commands never ask for confirmation**: invoking one is the authorization. Ask the user before calling them when consent is required.
+- **Agents may only write through the draft series**: use `message draft create|reply|reply-all`; **never** call `message send`, `message reply` or `message reply-all` to actually send mail. Sending is always left to a human to review in Drafts.
+- **Write commands never ask for confirmation**: within the scope allowed above, invoking one is the authorization. Ask the user before calling them when consent is required.
 - **Draft commands never send**: `message draft create|reply|reply-all` only saves to Exchange Drafts. Run `sync` before reading the new draft through local commands.
 - **There is no delete capability**: the CLI exposes no command that deletes a message or folder, so anything produced by tests or mistakes has to be cleaned up manually.
 - **Attachments are download-only and never overwrite**: `attachment save` returns `destination_exists`/2 when the target file already exists and offers no `--overwrite`; embedded `kind="item"` attachments return `invalid_argument`.
-- **The server generates the quote**: pass only your new text to `message reply` / `reply-all`.
+- **The server generates the quote**: pass only your new text to the draft replies (`message draft reply` / `reply-all`).
 
 ## Known limitations
 

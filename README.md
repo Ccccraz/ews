@@ -182,11 +182,12 @@ username = "operator"
 
 - **stdout 只解析 JSON**，不要假设会有多行输出；诊断与进度类信息只出现在 stderr（`sync --progress` 除外）。
 - **按 `code` 与 `retryable` 决策**：`service_error` 可重试；`cache_not_ready` 应先 `sync`；`resource_not_found` 说明本地缓存里没有这条数据，同样先 `sync` 再看。
-- **写命令不做交互确认**：调用显式写命令即表示授权执行；需要用户同意时应在调用前确认。
+- **Agent 写操作只允许草稿系列**：agent 只能通过 `message draft create|reply|reply-all` 写入；**不得**调用 `message send`、`message reply`、`message reply-all` 真正发信。发信一律留给人工在 Drafts 中检查后完成。
+- **写命令不做交互确认**：在上一条允许的范围内，调用显式写命令即表示授权执行；需要用户同意时应在调用前确认。
 - **草稿命令永不发送**：`message draft create|reply|reply-all` 只保存到 Exchange Drafts；需要执行一次 `sync` 后才能通过本地读命令看到新草稿。
 - **没有删除能力**：CLI 不提供任何删除邮件或文件夹的命令，测试或误操作产生的邮件需要人工清理。
 - **附件只下载不覆盖**：`attachment save` 遇到已存在的目标文件返回 `destination_exists`/2，且没有 `--overwrite`；`kind="item"` 的内嵌邮件/日历附件返回 `invalid_argument`。
-- **引用块由服务器生成**：`message reply` / `reply-all` 只需提供你要新增的正文。
+- **引用块由服务器生成**：草稿回复（`message draft reply` / `reply-all`）只需提供你要新增的正文。
 
 ## 已知限制
 
