@@ -15,8 +15,13 @@ from ews.models import (
     MessageBody,
     MessageDetail,
     MessageListQuery,
+    MessageMoveResult,
+    MessageReadStateResult,
+    MessageSendResult,
     MessageSummary,
     MessageSyncResult,
+    OutgoingMessage,
+    OutgoingReply,
     Profile,
     TlsCheckResult,
 )
@@ -108,6 +113,36 @@ class FakeGateway:
         message_ids: Sequence[tuple[str, str]],
     ) -> list[MessageDetail]:
         del profile, password, message_ids
+        raise AssertionError("Not used")
+
+    def send_message(
+        self, profile: Profile, password: SecretStr, message: OutgoingMessage
+    ) -> MessageSendResult:
+        del profile, password, message
+        raise AssertionError("Not used")
+
+    def reply_message(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        reply: OutgoingReply,
+        *,
+        reply_all: bool,
+    ) -> MessageSendResult:
+        del profile, password, message_id, reply, reply_all
+        raise AssertionError("Not used")
+
+    def set_read_state(
+        self, profile: Profile, password: SecretStr, message_id: str, *, is_read: bool
+    ) -> MessageReadStateResult:
+        del profile, password, message_id, is_read
+        raise AssertionError("Not used")
+
+    def move_message(
+        self, profile: Profile, password: SecretStr, message_id: str, folder_id: str
+    ) -> MessageMoveResult:
+        del profile, password, message_id, folder_id
         raise AssertionError("Not used")
 
 

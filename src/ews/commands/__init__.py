@@ -3,6 +3,13 @@ from ews.commands.config import show_config, show_config_path
 from ews.commands.doctor import doctor
 from ews.commands.folder import list_folders
 from ews.commands.message import get_message, list_messages
+from ews.commands.message_write import (
+    mark_read,
+    move_message,
+    reply_all_to_message,
+    reply_to_message,
+    send_message,
+)
 from ews.commands.set_profile import set_profile
 from ews.commands.sync import sync_mailbox
 from ews.commands.test_access import test_access
@@ -13,7 +20,12 @@ __all__ = [
     "doctor",
     "list_folders",
     "list_messages",
+    "mark_read",
+    "move_message",
     "password_status",
+    "reply_all_to_message",
+    "reply_to_message",
+    "send_message",
     "set_profile",
     "set_password",
     "show_config",

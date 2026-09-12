@@ -19,8 +19,13 @@ from ews.models import (
     MessageChangeKind,
     MessageDetail,
     MessageListQuery,
+    MessageMoveResult,
+    MessageReadStateResult,
+    MessageSendResult,
     MessageSyncCounts,
     MessageSyncResult,
+    OutgoingMessage,
+    OutgoingReply,
     Profile,
 )
 from ews.storage import SqliteMailboxStore
@@ -85,6 +90,36 @@ class SyncGateway:
         del profile, password
         self.fetch_sizes.append(len(message_ids))
         return [_message(message_id, change_key) for message_id, change_key in message_ids]
+
+    def send_message(
+        self, profile: Profile, password: SecretStr, message: OutgoingMessage
+    ) -> MessageSendResult:
+        del profile, password, message
+        raise AssertionError("Not used")
+
+    def reply_message(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        reply: OutgoingReply,
+        *,
+        reply_all: bool,
+    ) -> MessageSendResult:
+        del profile, password, message_id, reply, reply_all
+        raise AssertionError("Not used")
+
+    def set_read_state(
+        self, profile: Profile, password: SecretStr, message_id: str, *, is_read: bool
+    ) -> MessageReadStateResult:
+        del profile, password, message_id, is_read
+        raise AssertionError("Not used")
+
+    def move_message(
+        self, profile: Profile, password: SecretStr, message_id: str, folder_id: str
+    ) -> MessageMoveResult:
+        del profile, password, message_id, folder_id
+        raise AssertionError("Not used")
 
 
 class RecordingProgress:
