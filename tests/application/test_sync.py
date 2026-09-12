@@ -10,10 +10,18 @@ from ews.config import PasswordStore, ProfileStore
 from ews.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
+    Contact,
+    ContactChange,
+    ContactChangeKind,
+    ContactEmail,
+    ContactSyncCounts,
+    ContactSyncResult,
+    DirectorySearchResult,
     DraftMessage,
     Folder,
     FolderChange,
     FolderChangeKind,
+    FolderKind,
     FolderSyncResult,
     MailboxSyncResult,
     MessageBody,
@@ -38,7 +46,9 @@ class SyncGateway:
     def __init__(self) -> None:
         self.hierarchy_states: list[str | None] = []
         self.item_states: list[str | None] = []
+        self.contact_states: list[str | None] = []
         self.fetch_sizes: list[int] = []
+        self.contact_fetch_sizes: list[int] = []
         self.invalidate_hierarchy = False
         self.invalidate_items = False
 
@@ -54,11 +64,11 @@ class SyncGateway:
         if self.invalidate_hierarchy and sync_state is not None:
             self.invalidate_hierarchy = False
             raise InvalidSyncStateError("invalid")
-        changes = [] if sync_state is not None else [_folder_change()]
+        changes = [] if sync_state is not None else [_folder_change(), _contact_folder_change()]
         return FolderSyncResult(
             changes=changes,
             sync_state="hierarchy-state",
-            well_known_folder_ids={"inbox": "inbox-id"},
+            well_known_folder_ids={"inbox": "inbox-id", "contacts": "contacts-id"},
         )
 
     def sync_items(
@@ -88,6 +98,40 @@ class SyncGateway:
         )
         return MessageSyncResult(changes=changes, sync_state="item-state")
 
+    def sync_contacts(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        folder_id: str,
+        sync_state: str | None,
+    ) -> ContactSyncResult:
+        del profile, password
+        assert folder_id == "contacts-id"
+        self.contact_states.append(sync_state)
+        changes = (
+            [
+                ContactChange(
+                    kind=ContactChangeKind.CREATE,
+                    contact_id=f"contact-{index}",
+                    change_key=f"contact-change-{index}",
+                )
+                for index in range(3)
+            ]
+            if sync_state is None
+            else []
+        )
+        return ContactSyncResult(changes=changes, sync_state="contact-state")
+
+    def fetch_contacts(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        contact_ids: Sequence[tuple[str, str]],
+    ) -> list[Contact]:
+        del profile, password
+        self.contact_fetch_sizes.append(len(contact_ids))
+        return [_contact(contact_id, change_key) for contact_id, change_key in contact_ids]
+
     def fetch_messages(
         self,
         profile: Profile,
@@ -97,6 +141,12 @@ class SyncGateway:
         del profile, password
         self.fetch_sizes.append(len(message_ids))
         return [_message(message_id, change_key) for message_id, change_key in message_ids]
+
+    def search_directory(
+        self, profile: Profile, password: SecretStr, query: str
+    ) -> DirectorySearchResult:
+        del profile, password, query
+        raise AssertionError("Not used")
 
     def send_message(
         self, profile: Profile, password: SecretStr, message: OutgoingMessage
@@ -177,11 +227,14 @@ class RecordingProgress:
     def messages_fetched(self, count: int) -> None:
         self.events.append(("messages_fetched", count))
 
-    def folder_completed(self, counts: MessageSyncCounts) -> None:
-        self.events.append(("folder_completed", counts.created))
+    def folder_completed(self, counts: MessageSyncCounts | ContactSyncCounts) -> None:
+        if isinstance(counts, ContactSyncCounts):
+            self.events.append(("contact_folder_completed", counts.created))
+        else:
+            self.events.append(("folder_completed", counts.created))
 
     def sync_completed(self, result: MailboxSyncResult) -> None:
-        self.events.append(("sync_completed", result.messages.created))
+        self.events.append(("sync_completed", result.messages.created, result.contacts.created))
 
 
 def test_sync_batches_get_item_and_reads_remain_local(
@@ -192,11 +245,14 @@ def test_sync_batches_get_item_and_reads_remain_local(
 
     result = service.sync("agent@example.com")
 
-    assert result.folders.created == 1
+    assert result.folders.created == 2
     assert result.messages.created == 11
+    assert result.contacts.created == 3
     assert gateway.fetch_sizes == [10, 1]
+    assert gateway.contact_fetch_sizes == [3]
     assert gateway.hierarchy_states == [None]
     assert gateway.item_states == [None]
+    assert gateway.contact_states == [None]
 
     def reject_password(service_name: str, username: str) -> str:
         del service_name, username
@@ -219,13 +275,15 @@ def test_sync_reports_typed_progress_events(tmp_path: Path, monkeypatch: MonkeyP
 
     assert progress.events == [
         ("hierarchy_started",),
-        ("hierarchy_completed", 1),
-        ("folder_started", "Inbox", 1, 1),
+        ("hierarchy_completed", 2),
+        ("folder_started", "Inbox", 1, 2),
         ("message_fetch_started", 11),
         ("messages_fetched", 10),
         ("messages_fetched", 1),
         ("folder_completed", 11),
-        ("sync_completed", 11),
+        ("folder_started", "Contacts", 2, 2),
+        ("contact_folder_completed", 3),
+        ("sync_completed", 11, 3),
     ]
 
 
@@ -280,7 +338,41 @@ def _folder_change() -> FolderChange:
         total_count=11,
         unread_count=11,
     )
-    return FolderChange(kind=FolderChangeKind.CREATE, folder_id=folder.id, folder=folder)
+    return FolderChange(
+        kind=FolderChangeKind.CREATE,
+        folder_id=folder.id,
+        folder=folder,
+        folder_kind=FolderKind.MAIL,
+    )
+
+
+def _contact_folder_change() -> FolderChange:
+    folder = Folder(
+        id="contacts-id",
+        parent_id=None,
+        name="Contacts",
+        well_known_name="contacts",
+        total_count=3,
+        unread_count=0,
+    )
+    return FolderChange(
+        kind=FolderChangeKind.CREATE,
+        folder_id=folder.id,
+        folder=folder,
+        folder_kind=FolderKind.CONTACTS,
+    )
+
+
+def _contact(contact_id: str, change_key: str) -> Contact:
+    return Contact(
+        id=contact_id,
+        change_key=change_key,
+        parent_folder_id="contacts-id",
+        display_name=f"Contact {contact_id}",
+        emails=[
+            ContactEmail(label="EmailAddress1", address=f"{contact_id}@example.com"),
+        ],
+    )
 
 
 def _message(message_id: str, change_key: str) -> MessageDetail:

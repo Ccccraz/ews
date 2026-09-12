@@ -8,7 +8,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TaskProgre
 
 from ews.application import SyncProgressReporter
 from ews.commands.context import CommandContext, run_read
-from ews.models import MailboxSyncResult, MessageSyncCounts
+from ews.models import ContactSyncCounts, MailboxSyncResult, MessageSyncCounts
 
 
 def sync_mailbox(
@@ -65,7 +65,7 @@ class RichSyncProgress(SyncProgressReporter):
         if self._hierarchy_task is not None:
             self._progress.update(
                 self._hierarchy_task,
-                description=f"Found {folder_total} visible mail folders",
+                description=f"Found {folder_total} visible folders",
                 total=1,
                 completed=1,
             )
@@ -89,7 +89,7 @@ class RichSyncProgress(SyncProgressReporter):
         if self._message_task is not None:
             self._progress.advance(self._message_task, count)
 
-    def folder_completed(self, counts: MessageSyncCounts) -> None:
+    def folder_completed(self, counts: MessageSyncCounts | ContactSyncCounts) -> None:
         if self._message_task is not None:
             self._progress.remove_task(self._message_task)
             self._message_task = None
@@ -97,15 +97,24 @@ class RichSyncProgress(SyncProgressReporter):
             self._progress.advance(self._folder_task)
             self._progress.update(
                 self._folder_task,
-                description=(
-                    "Applied messages: "
-                    f"{counts.created} created, {counts.updated} updated, "
-                    f"{counts.deleted} deleted, "
-                    f"{counts.read_state_changed} read-state changes"
-                ),
+                description=_applied_description(counts),
             )
 
     def sync_completed(self, result: MailboxSyncResult) -> None:
         del result
         if self._folder_task is not None:
             self._progress.update(self._folder_task, description="Synchronization complete")
+
+
+def _applied_description(counts: MessageSyncCounts | ContactSyncCounts) -> str:
+    if isinstance(counts, ContactSyncCounts):
+        return (
+            "Applied contacts: "
+            f"{counts.created} created, {counts.updated} updated, {counts.deleted} deleted"
+        )
+    return (
+        "Applied messages: "
+        f"{counts.created} created, {counts.updated} updated, "
+        f"{counts.deleted} deleted, "
+        f"{counts.read_state_changed} read-state changes"
+    )

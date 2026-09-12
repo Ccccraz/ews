@@ -1,6 +1,7 @@
 from ews.commands.attachment import save_attachment
 from ews.commands.auth import delete_password, password_status, set_password
 from ews.commands.config import delete_config, list_config, show_config, show_config_path
+from ews.commands.contact import get_contact, list_contacts, search_directory
 from ews.commands.doctor import doctor
 from ews.commands.folder import list_folders
 from ews.commands.message import get_message, get_thread, list_messages
@@ -22,11 +23,13 @@ __all__ = [
     "create_draft",
     "create_reply_all_draft",
     "create_reply_draft",
+    "get_contact",
     "get_message",
     "get_thread",
     "delete_password",
     "delete_config",
     "doctor",
+    "list_contacts",
     "list_folders",
     "list_config",
     "list_messages",
@@ -36,6 +39,7 @@ __all__ = [
     "reply_all_to_message",
     "reply_to_message",
     "save_attachment",
+    "search_directory",
     "send_message",
     "set_profile",
     "set_password",

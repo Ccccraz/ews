@@ -8,6 +8,7 @@ import pytest
 from exchangelib.errors import (
     ErrorFolderNotFound,
     ErrorInvalidSyncStateData,
+    ErrorNameResolutionNoResults,
     TransportError,
     UnauthorizedError,
 )
@@ -16,7 +17,13 @@ from pytest import MonkeyPatch
 
 from ews.application import InvalidSyncStateError
 from ews.exchange import EwsAuthenticationError, EwsClient, EwsServiceError
-from ews.models import FolderChangeKind, MessageChangeKind, Profile
+from ews.models import (
+    ContactChangeKind,
+    FolderChangeKind,
+    FolderKind,
+    MessageChangeKind,
+    Profile,
+)
 
 
 class FakeCredentials:
@@ -56,6 +63,10 @@ class MailFolder:
 
 class CalendarFolder(MailFolder):
     folder_class = "IPF.Appointment"
+
+
+class ContactFolder(MailFolder):
+    folder_class = "IPF.Contact"
 
 
 class HiddenFolder(MailFolder):
@@ -123,6 +134,7 @@ DISTINGUISHED_FOLDERS = {
     "conflicts": ("conflicts-folder", "Conflicts"),
     "local_failures": ("local-failures-folder", "Local Failures"),
     "server_failures": ("server-failures-folder", "Server Failures"),
+    "contacts": ("contacts-folder", "Contacts"),
 }
 # Named folders the fake root never reports, in resolution order.
 OMITTED_NAMED_FOLDER_IDS = [
@@ -137,13 +149,44 @@ OMITTED_NAMED_FOLDER_IDS = [
     "conflicts-folder",
     "local-failures-folder",
     "server-failures-folder",
+    "contacts-folder",
 ]
+
+
+class FakeProtocol:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.result: list[object] = []
+        self.truncate = False
+
+    def resolve_names(
+        self,
+        names: object,
+        parent_folders: object = None,
+        return_full_contact_data: bool = False,
+        search_scope: str | None = None,
+        shape: str | None = None,
+    ) -> list[object]:
+        self.calls.append(
+            {
+                "names": list(names),  # type: ignore[call-overload]
+                "full": return_full_contact_data,
+                "scope": search_scope,
+                "shape": shape,
+            }
+        )
+        if self.truncate:
+            import warnings
+
+            warnings.warn("The ResolveNames service returns at most 100 candidates", stacklevel=1)
+        return self.result
 
 
 class FakeAccount:
     last_instance: FakeAccount | None = None
     root: ClassVar[FakeRoot] = FakeRoot()
     fetched: ClassVar[list[object]] = []
+    protocol: ClassVar[FakeProtocol] = FakeProtocol()
 
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
@@ -299,6 +342,7 @@ def test_sync_hierarchy_consumes_generator_and_filters_visible_folders(
         "Conflicts",
         "Local Failures",
         "Server Failures",
+        "Contacts",
     ]
     assert result.well_known_folder_ids == {
         "inbox": "parent",
@@ -313,6 +357,7 @@ def test_sync_hierarchy_consumes_generator_and_filters_visible_folders(
         "conflicts": "conflicts-folder",
         "localfailures": "local-failures-folder",
         "serverfailures": "server-failures-folder",
+        "contacts": "contacts-folder",
     }
     assert root.sync_calls[0][0] == "old-state"
     assert "is_hidden" in root.sync_calls[0][1]
@@ -552,3 +597,218 @@ def _meeting_item(message_id: str) -> FakeMeetingItem:
     for name, value in vars(message).items():
         setattr(meeting, name, value)
     return meeting
+
+
+class FakeContactItem:
+    """A stand-in for an IdOnly contact item."""
+
+    def __init__(self, contact_id: str, changekey: str = "ck") -> None:
+        self.id = contact_id
+        self.changekey = changekey
+
+
+class FakeContact(FakeContactItem):
+    def __init__(self, contact_id: str) -> None:
+        super().__init__(contact_id, "contact-change")
+        self.parent_folder_id = SimpleNamespace(id="contacts-folder")
+        self.display_name = "Alice Zhang"
+        self.file_as = "Zhang, Alice"
+        self.given_name = "Alice"
+        self.middle_name = None
+        self.surname = "Zhang"
+        self.nickname = None
+        self.initials = "AZ"
+        self.generation = None
+        self.company_name = "Example"
+        self.department = "Engineering"
+        self.job_title = "Engineer"
+        self.office = "3F"
+        self.manager = "Bob"
+        self.profession = None
+        self.business_homepage = None
+        self.email_addresses = [SimpleNamespace(label="EmailAddress1", email="alice@example.com")]
+        self.phone_numbers = [SimpleNamespace(label="MobilePhone", phone_number="123")]
+        self.physical_addresses = [
+            SimpleNamespace(
+                label="Business",
+                street="1 Road",
+                city="Shanghai",
+                state=None,
+                country="CN",
+                zipcode="200000",
+            )
+        ]
+        self.im_addresses = [SimpleNamespace(label="ImAddress1", im_address="alice.im")]
+        self.categories = ["Team"]
+        self.notes = "Notes"
+        self.birthday = None
+        self.has_picture = True
+
+
+def _contact_item(contact_id: str) -> FakeContactItem:
+    return FakeContactItem(contact_id, f"{contact_id}-change")
+
+
+def test_sync_hierarchy_classifies_contact_folders(monkeypatch: MonkeyPatch) -> None:
+    root = FakeRoot()
+    root.changes = [("create", ContactFolder("contacts-raw"))]
+    FakeAccount.root = root
+    _patch_account(monkeypatch, FakeAccount)
+
+    result = EwsClient().sync_hierarchy(_profile(), SecretStr("secret"), None)
+
+    created = next(change for change in result.changes if change.folder_id == "contacts-raw")
+    assert created.folder_kind is FolderKind.CONTACTS
+
+
+def test_sync_contacts_maps_changes_and_skips_unsupported_items(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    folder = ContactFolder("contacts-folder")
+    folder.changes = [
+        ("create", _contact_item("created")),
+        ("update", _contact_item("updated")),
+        ("delete", _contact_item("deleted")),
+        ("update", SimpleNamespace(id="unsupported")),
+    ]
+    FakeAccount.root = FakeRoot()
+    _patch_account(monkeypatch, FakeAccount)
+    _patch_folder_from_id(monkeypatch, folder)
+    monkeypatch.setattr("ews.exchange.client.EwsContact", FakeContactItem)
+
+    result = EwsClient().sync_contacts(_profile(), SecretStr("secret"), "contacts-folder", None)
+
+    assert result.sync_state == "item-state-2"
+    assert [(change.kind, change.contact_id) for change in result.changes] == [
+        (ContactChangeKind.CREATE, "created"),
+        (ContactChangeKind.UPDATE, "updated"),
+        (ContactChangeKind.DELETE, "deleted"),
+        (ContactChangeKind.DELETE, "unsupported"),
+    ]
+    assert result.changes[0].change_key == "created-change"
+
+
+def test_fetch_contacts_maps_common_fields_and_enforces_batch_limit(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    FakeAccount.fetched = [FakeContact("contact-id")]
+    FakeAccount.root = FakeRoot()
+    _patch_account(monkeypatch, FakeAccount)
+    monkeypatch.setattr("ews.exchange.client.EwsContact", FakeContact)
+
+    contacts = EwsClient().fetch_contacts(
+        _profile(), SecretStr("secret"), [("contact-id", "contact-change")]
+    )
+
+    assert contacts[0].display_name == "Alice Zhang"
+    assert contacts[0].folder_name is None
+    assert contacts[0].emails[0].address == "alice@example.com"
+    assert contacts[0].phones[0].number == "123"
+    assert contacts[0].addresses[0].postal_code == "200000"
+    assert contacts[0].im_addresses[0].address == "alice.im"
+    assert contacts[0].categories == ["Team"]
+    assert contacts[0].has_picture is True
+    account = FakeAccount.last_instance
+    assert account is not None
+    assert account.fetch_args is not None
+    assert account.fetch_args["ids"] == [("contact-id", "contact-change")]
+    with pytest.raises(ValueError, match="at most 10"):
+        EwsClient().fetch_contacts(
+            _profile(), SecretStr("secret"), [(str(index), "ck") for index in range(11)]
+        )
+
+
+def test_fetch_contacts_rejects_incomplete_and_wrong_type(monkeypatch: MonkeyPatch) -> None:
+    FakeAccount.fetched = []
+    _patch_account(monkeypatch, FakeAccount)
+    monkeypatch.setattr("ews.exchange.client.EwsContact", FakeContact)
+    with pytest.raises(EwsServiceError, match="incomplete"):
+        EwsClient().fetch_contacts(_profile(), SecretStr("secret"), [("contact-id", "ck")])
+
+    FakeAccount.fetched = [FakeContactItem("not-a-contact")]
+    _patch_account(monkeypatch, FakeAccount)
+    with pytest.raises(EwsServiceError, match="non-contact"):
+        EwsClient().fetch_contacts(_profile(), SecretStr("secret"), [("contact-id", "ck")])
+
+
+def test_search_directory_maps_resolved_contacts(monkeypatch: MonkeyPatch) -> None:
+    FakeAccount.protocol.calls = []
+    FakeAccount.protocol.truncate = False
+    FakeAccount.protocol.result = [(_directory_mailbox(), _directory_contact())]
+    _patch_account(monkeypatch, FakeAccount)
+
+    result = EwsClient().search_directory(_profile(), SecretStr("secret"), "abel")
+
+    assert result.user == "DOMAIN\\agent"
+    assert result.query == "abel"
+    assert result.truncated is False
+    contact = result.contacts[0]
+    assert contact.display_name == "Abel, Jacqueline"
+    assert contact.email_address == "jabel@dpz.eu"
+    assert contact.mailbox_type == "Mailbox"
+    assert contact.department == "Tierhaltung"
+    assert contact.emails[0].address == "jabel@dpz.eu"
+    assert contact.phones[0].number == "+49 551 3851-0"
+    assert contact.addresses[0].city == "Göttingen"
+    assert FakeAccount.protocol.calls[0] == {
+        "names": ["abel"],
+        "full": True,
+        "scope": "ActiveDirectory",
+        "shape": "AllProperties",
+    }
+
+
+def test_search_directory_skips_no_results_and_empty_result(monkeypatch: MonkeyPatch) -> None:
+    FakeAccount.protocol.calls = []
+    FakeAccount.protocol.truncate = False
+    FakeAccount.protocol.result = [ErrorNameResolutionNoResults("no results")]
+    _patch_account(monkeypatch, FakeAccount)
+
+    result = EwsClient().search_directory(_profile(), SecretStr("secret"), "zzz")
+
+    assert result.contacts == []
+    assert result.truncated is False
+
+
+def test_search_directory_marks_truncation(monkeypatch: MonkeyPatch) -> None:
+    FakeAccount.protocol.calls = []
+    FakeAccount.protocol.truncate = True
+    FakeAccount.protocol.result = []
+    _patch_account(monkeypatch, FakeAccount)
+
+    result = EwsClient().search_directory(_profile(), SecretStr("secret"), "s")
+
+    assert result.truncated is True
+
+
+def _directory_mailbox() -> SimpleNamespace:
+    return SimpleNamespace(
+        name="Abel, Jacqueline",
+        email_address="EX:/o=DPZ/cn=Abel",
+        mailbox_type="Mailbox",
+    )
+
+
+def _directory_contact() -> SimpleNamespace:
+    return SimpleNamespace(
+        display_name="Abel, Jacqueline",
+        given_name="Jacqueline",
+        surname="Abel",
+        company_name="Deutsches Primatenzentrum GmbH",
+        department="Tierhaltung",
+        job_title="Mitarbeiterin",
+        email_alias="jabel",
+        directory_id="<GUID=82035e82-399d-4bad-9b8d-b8b210ba8aa4>",
+        email_addresses=[SimpleNamespace(label="EmailAddress1", email="SMTP:jabel@dpz.eu")],
+        phone_numbers=[SimpleNamespace(label="BusinessPhone", phone_number="+49 551 3851-0")],
+        physical_addresses=[
+            SimpleNamespace(
+                label="Business",
+                street="Kellnerweg 4",
+                city="Göttingen",
+                state="Niedersachsen",
+                country="Deutschland",
+                zipcode="37077",
+            )
+        ],
+    )

@@ -1,5 +1,6 @@
 from ews.application.errors import (
     AttachmentNotFoundError,
+    ContactNotFoundError,
     DestinationExistsError,
     FolderNotFoundError,
     InvalidDestinationError,
@@ -16,6 +17,7 @@ from ews.application.tls import TlsProbe
 
 __all__ = [
     "AttachmentNotFoundError",
+    "ContactNotFoundError",
     "DestinationExistsError",
     "FolderNotFoundError",
     "InvalidDestinationError",

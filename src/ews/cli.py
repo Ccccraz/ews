@@ -15,9 +15,11 @@ from ews.commands import (
     delete_config,
     delete_password,
     doctor,
+    get_contact,
     get_message,
     get_thread,
     list_config,
+    list_contacts,
     list_folders,
     list_messages,
     mark_read,
@@ -26,6 +28,7 @@ from ews.commands import (
     reply_all_to_message,
     reply_to_message,
     save_attachment,
+    search_directory,
     send_message,
     set_password,
     set_profile,
@@ -48,6 +51,7 @@ commands = App(
 )
 folder = App(name="folder", help="Read mail folders.")
 message = App(name="message", help="Read and write messages.")
+contact = App(name="contact", help="Read cached contacts.")
 draft = App(name="draft", help="Save messages in Drafts without sending them.")
 attachment = App(name="attachment", help="Read message attachments.")
 config = App(name="config", help="Inspect configuration.")
@@ -59,10 +63,14 @@ commands.command(sync_mailbox, name="sync")
 commands.command(doctor, name="doctor")
 commands.command(folder)
 commands.command(message)
+commands.command(contact)
 commands.command(attachment)
 commands.command(config)
 commands.command(auth)
 folder.command(list_folders, name="list")
+contact.command(list_contacts, name="list")
+contact.command(get_contact, name="get")
+contact.command(search_directory, name="search")
 message.command(list_messages, name="list")
 message.command(draft)
 message.command(get_message, name="get")

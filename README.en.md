@@ -18,7 +18,8 @@ This project puts agent tooling on top of a local Exchange mailbox. It does one 
 | Configuration and authentication | `set`, `config list\|show\|delete\|path`, `auth set-password\|status\|delete-password` |
 | Connectivity diagnostics | `test`, `doctor` |
 | Synchronization | `sync` (incremental and resumable) |
-| Reads | `folder list`, `message list`, `message get`, `message thread` |
+| Reads | `folder list`, `message list`, `message get`, `message thread`, `contact list`, `contact get` |
+| Directory | `contact search` (live Global Address List lookup, never cached) |
 | Writes | `message send`, `message reply`, `message reply-all`, `message draft create\|reply\|reply-all`, `message mark-read`, `message move` |
 | Attachments | `attachment save` (download only, streamed, never overwrites) |
 
@@ -88,8 +89,11 @@ ews --user agent message thread <message-id>
 | `set` | Interactively add or update a profile by mailbox | no | no |
 | `test` | One real Inbox metadata request | yes | no |
 | `doctor` | Verify configuration, Keychain, system TLS, NTLM | yes | no |
-| `sync [--progress]` | Incrementally synchronize into the local cache | yes | no (it writes the cache) |
+| `sync [--progress]` | Incrementally synchronize into the local cache (mail + personal contacts) | yes | no (it writes the cache) |
 | `folder list` | Folder tree with folder IDs and well-known names | yes | yes |
+| `contact list` | Contacts with folder/text filters plus pagination | yes | yes |
+| `contact get <id>` | One contact with its common EWS fields | yes | yes |
+| `contact search <query>` | Live Global Address List (GAL) lookup | yes | no (network) |
 | `message list` | Structured filters plus pagination | yes | yes |
 | `message get <id>` | One message: body, headers, attachment metadata | yes | yes |
 | `message thread <id>` | One whole conversation | yes | yes |
@@ -105,6 +109,10 @@ ews --user agent message thread <message-id>
 | `auth set-password` / `status` / `delete-password` | Manage the selected profile's Keychain password | yes | no |
 
 The `message list` filters combine with AND: `--folder`, `--read-state read|unread|any`, `--sender`, `--subject-contains`, `--body-contains`, `--received-from`, `--received-before`. Pagination uses `--limit` (default 50, maximum 200) and `--offset`. `message thread` accepts `--limit` (default 20, maximum 200) and `--offset`.
+
+`contact list` accepts `--folder` (a contact folder ID or `contacts`), `--search` (case-insensitive match over display name, company, department and email addresses) plus the same `--limit`/`--offset`; by default it returns every contact folder ordered by `file_as`. `contact get <id>` returns one contact's common fields (names, company, department, title, emails/phones/addresses/IM, notes, birthday, ...).
+
+`contact search <query>` is the **only networked read command**: it queries the live corporate directory (GAL / OWA People → Directory, backed by EWS `ResolveNames`). It matches on name fragments, aliases or email prefixes and returns the display name, primary SMTP address, `mailbox_type` (`Mailbox` / `PublicDL` / `PrivateDL` / ...), given/surname, company, department, title, and labeled emails/phones/addresses. It neither reads nor writes the local cache and does not require `sync`. `--limit` defaults to 25 (maximum 100); the server caps a single lookup at 100 candidates, and `truncated: true` means the query should be narrowed. Typical use: resolve a colleague's email with `contact search`, then send or reply.
 
 Write commands take their body from `--body-file <path>` (`-` means stdin) and select the body type with `--content-type text|html` (default `text`). `message draft create` may omit all recipients.
 
@@ -168,8 +176,9 @@ The old `$HOME/.config/taskseed/ews/profile.toml` is neither read nor migrated a
 
 ## Local cache and synchronization
 
-- The cache is the SQLite file `$HOME/.config/taskseed/ews/cache.db`. It stores message metadata and bodies, never attachment content.
-- Read commands **only read the cache**. Until one complete `sync` has finished the cache is unreadable, and reads answer `cache_not_ready`/4 with a hint to run `sync` first.
+- The cache is the SQLite file `$HOME/.config/taskseed/ews/cache.db`. It stores message metadata and bodies plus the common fields of personal contacts, never attachment content or contact photos.
+- Read commands **only read the cache**. Until one complete `sync` has finished the cache is unreadable, and reads answer `cache_not_ready`/4 with a hint to run `sync` first; this includes `contact list|get`. `contact search` is the exception: it queries the live corporate directory and neither reads nor writes the cache.
+- `sync` synchronizes mail folders and personal contact folders (`IPF.Contact`) into the same cache and shares one `ready` flag.
 - Write commands **change the remote mailbox only, never the cache**: the effects of `mark-read` and `move` converge on the next `sync`, so reading immediately after a write can still show the pre-write snapshot.
 - `sync` is incremental, walks folders one by one, and is **resumable**: a failure half-way leaves a consistent prefix that the next run continues from. When the server rejects an expired sync state, that scope is re-enumerated from scratch, transparently to the caller.
 - The cache represents "the most recently synchronized view", not a point-in-time snapshot. A schema upgrade forces a rebuild, after which `sync` has to run again.
@@ -188,7 +197,8 @@ The old `$HOME/.config/taskseed/ews/profile.toml` is neither read nor migrated a
 
 - macOS only; multiple independent mailbox profiles are supported, but shared mailboxes, impersonation, and a default/current profile are not.
 - No Autodiscover, no custom CA files, no way to skip TLS verification.
-- Not in this first version: deleting, forwarding, updating/sending/deleting existing drafts, draft or outgoing attachments, calendar and contacts, MIME `.eml` export.
+- Not in this first version: deleting, forwarding, updating/sending/deleting existing drafts, draft or outgoing attachments, calendar and tasks, MIME `.eml` export.
+- Contacts: personal contacts (`IPF.Contact`) are read-only and locally cached; the corporate directory (GAL) is queried live via `contact search` and is **never downloaded or exported** (EWS does not allow browsing the GAL). There are no contact write commands, and contact distribution lists (`IPF.Contact.DistributionList`) and contact photos are out of scope, although GAL search does return distribution-list entries.
 - `folder list` returns `well_known_name: null` for folders without an EWS distinguished name (custom folders, or the main-mailbox folder literally named `Archive`); those can only be selected by folder ID.
 
 ## Development

@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from ews.models import MailboxSyncResult, MessageSyncCounts
+from ews.models import ContactSyncCounts, MailboxSyncResult, MessageSyncCounts
 
 
 class SyncProgressReporter(Protocol):
@@ -26,8 +26,8 @@ class SyncProgressReporter(Protocol):
         """Report newly fetched complete messages."""
         ...
 
-    def folder_completed(self, counts: MessageSyncCounts) -> None:
-        """Report applied message changes for one folder."""
+    def folder_completed(self, counts: MessageSyncCounts | ContactSyncCounts) -> None:
+        """Report applied item changes for one folder."""
         ...
 
     def sync_completed(self, result: MailboxSyncResult) -> None:
