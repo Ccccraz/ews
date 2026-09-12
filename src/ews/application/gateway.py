@@ -1,28 +1,37 @@
+from collections.abc import Sequence
 from typing import Protocol
 
 from pydantic import SecretStr
 
 from ews.models import (
     ConnectionTestResult,
-    Folder,
+    FolderSyncResult,
     MessageDetail,
-    MessageListQuery,
-    MessageSummary,
+    MessageSyncResult,
     Profile,
 )
 
 
 class MailboxGateway(Protocol):
-    """Strict application boundary for mailbox operations."""
+    """Strict application boundary for remote mailbox operations."""
 
     def test_access(self, profile: Profile, password: SecretStr) -> ConnectionTestResult: ...
 
-    def list_folders(self, profile: Profile, password: SecretStr) -> list[Folder]: ...
+    def sync_hierarchy(
+        self, profile: Profile, password: SecretStr, sync_state: str | None
+    ) -> FolderSyncResult: ...
 
-    def list_messages(
-        self, profile: Profile, password: SecretStr, query: MessageListQuery
-    ) -> tuple[list[MessageSummary], bool]: ...
+    def sync_items(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        folder_id: str,
+        sync_state: str | None,
+    ) -> MessageSyncResult: ...
 
-    def get_message(
-        self, profile: Profile, password: SecretStr, message_id: str
-    ) -> MessageDetail: ...
+    def fetch_messages(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_ids: Sequence[tuple[str, str]],
+    ) -> list[MessageDetail]: ...

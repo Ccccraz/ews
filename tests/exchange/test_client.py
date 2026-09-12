@@ -1,38 +1,17 @@
 # pyright: reportMissingTypeStubs=false
 
-from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
-from exchangelib.items import Message
+from exchangelib.errors import ErrorInvalidSyncStateData, TransportError, UnauthorizedError
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
-from ews.application import FolderNotFoundError, InvalidFolderError, MessageNotFoundError
+from ews.application import InvalidSyncStateError
 from ews.exchange import EwsAuthenticationError, EwsClient, EwsServiceError
-from ews.models import MessageListQuery, Profile, ReadState
-
-
-class FakeInbox:
-    total_count = 12
-    unread_count = 3
-
-    def __init__(self) -> None:
-        self.refreshed = False
-
-    def refresh(self) -> None:
-        self.refreshed = True
-
-
-class FakeAccount:
-    last_instance: FakeAccount | None = None
-
-    def __init__(self, **kwargs: object) -> None:
-        self.kwargs = kwargs
-        self.inbox = FakeInbox()
-        self.version = "Build=15.2.1.2, API=Exchange2016"
-        FakeAccount.last_instance = self
+from ews.models import FolderChangeKind, MessageChangeKind, Profile
 
 
 class FakeCredentials:
@@ -45,256 +24,101 @@ class FakeConfiguration:
         self.kwargs = kwargs
 
 
-class FailingAccount:
-    error_type: type[Exception] = Exception
-
-    def __init__(self, **kwargs: object) -> None:
-        del kwargs
-
-    @property
-    def inbox(self) -> object:
-        raise self.error_type("failure")
-
-
-def test_client_performs_real_folder_refresh_at_adapter_boundary(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setattr("ews.exchange.client.Credentials", FakeCredentials)
-    monkeypatch.setattr("ews.exchange.client.Configuration", FakeConfiguration)
-    monkeypatch.setattr("ews.exchange.client.Account", FakeAccount)
-
-    result = EwsClient().test_access(_profile(), SecretStr("top-secret"))
-
-    account = FakeAccount.last_instance
-    assert account is not None
-    assert account.kwargs["primary_smtp_address"] == "agent@example.com"
-    assert account.kwargs["autodiscover"] is False
-    assert account.inbox.refreshed is True
-    assert result.server_version == "Build=15.2.1.2, API=Exchange2016"
-    assert result.inbox_total_count == 12
-    assert result.inbox_unread_count == 3
-
-
-@pytest.mark.parametrize(
-    ("error_path", "expected_error"),
-    [
-        ("exchangelib.errors.UnauthorizedError", EwsAuthenticationError),
-        ("exchangelib.errors.TransportError", EwsServiceError),
-    ],
-)
-def test_client_translates_exchangelib_errors(
-    monkeypatch: MonkeyPatch,
-    error_path: str,
-    expected_error: type[Exception],
-) -> None:
-    error_type = _load_error_type(error_path)
-    FailingAccount.error_type = error_type
-    monkeypatch.setattr("ews.exchange.client.Credentials", FakeCredentials)
-    monkeypatch.setattr("ews.exchange.client.Configuration", FakeConfiguration)
-    monkeypatch.setattr("ews.exchange.client.Account", FailingAccount)
-
-    with pytest.raises(expected_error):
-        EwsClient().test_access(_profile(), SecretStr("top-secret"))
-
-
-class FakeQuerySet:
-    def __init__(self, items: Sequence[object]) -> None:
-        self.items = list(items)
-        self.only_fields: tuple[str, ...] = ()
-        self.filters: dict[str, object] = {}
-        self.order: str | None = None
-        self.requested_slice: slice | None = None
-
-    def only(self, *fields: str) -> FakeQuerySet:
-        self.only_fields = fields
-        return self
-
-    def filter(self, **filters: object) -> FakeQuerySet:
-        self.filters.update(filters)
-        return self
-
-    def order_by(self, field: str) -> FakeQuerySet:
-        self.order = field
-        return self
-
-    def __getitem__(self, requested: slice) -> list[object]:
-        self.requested_slice = requested
-        return self.items[requested]
-
-
 class MailFolder:
-    supported_item_models = (Message,)
     DISTINGUISHED_FOLDER_ID = "inbox"
     folder_class = "IPF.Note"
+    is_hidden = False
 
-    def __init__(
-        self,
-        folder_id: str,
-        *,
-        parent_id: str | None = None,
-        queryset: FakeQuerySet | None = None,
-    ) -> None:
+    def __init__(self, folder_id: str, *, parent_id: str | None = None) -> None:
         self.id = folder_id
+        self.changekey = f"{folder_id}-change-key"
         self.parent_folder_id = SimpleNamespace(id=parent_id) if parent_id is not None else None
         self.name = "Inbox"
         self.total_count = 3
         self.unread_count = 2
-        self.queryset = queryset or FakeQuerySet([])
+        self.item_sync_state: str | None = None
+        self.sync_calls: list[tuple[str | None, list[str]]] = []
+        self.changes: list[tuple[str, object]] = []
 
-    def all(self) -> FakeQuerySet:
-        return self.queryset
+    def sync_items(self, *, sync_state: str | None, only_fields: list[str]) -> object:
+        self.sync_calls.append((sync_state, only_fields))
+
+        def generate() -> object:
+            yield from self.changes
+            self.item_sync_state = "item-state-2"
+
+        return generate()
 
 
 class CalendarFolder(MailFolder):
-    supported_item_models = (object,)
     DISTINGUISHED_FOLDER_ID = "calendar"
     folder_class = "IPF.Appointment"
 
 
-class ConversationFolder(MailFolder):
-    DISTINGUISHED_FOLDER_ID = "conversationhistory"
-    folder_class = None
-
-
-class SyncIssuesFolder(MailFolder):
-    DISTINGUISHED_FOLDER_ID = "syncissues"
-    is_hidden = False
-
-
-class HiddenMailFolder(MailFolder):
+class HiddenFolder(MailFolder):
     DISTINGUISHED_FOLDER_ID = None
     is_hidden = True
 
 
 class FakeRoot:
-    def __init__(self, folders: list[MailFolder]) -> None:
-        self.folders = folders
+    def __init__(self) -> None:
+        self.folder_sync_state: str | None = None
+        self.changes: list[tuple[str, object]] = []
+        self.folders: list[MailFolder] = []
+        self.sync_calls: list[tuple[str | None, tuple[str, ...]]] = []
+
+    def sync_hierarchy(self, *, sync_state: str | None, only_fields: tuple[str, ...]) -> object:
+        self.sync_calls.append((sync_state, only_fields))
+
+        def generate() -> object:
+            yield from self.changes
+            self.folder_sync_state = "hierarchy-state-2"
+
+        return generate()
 
     def walk(self) -> list[MailFolder]:
         return self.folders
 
 
-class MailboxAccount:
-    folders: list[MailFolder] = []
-    inbox_folder: MailFolder = MailFolder("inbox-id")
-    fetched: list[object] = []
-    last_instance: MailboxAccount | None = None
+class FakeInbox:
+    id = "parent"
+    total_count = 12
+    unread_count = 3
+
+    def __init__(self) -> None:
+        self.refreshed = False
+
+    def refresh(self) -> None:
+        self.refreshed = True
+
+
+class FakeAccount:
+    last_instance: FakeAccount | None = None
+    root: ClassVar[FakeRoot] = FakeRoot()
+    fetched: ClassVar[list[object]] = []
 
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
-        self.root = FakeRoot(self.folders)
-        self.msg_folder_root = self.root
-        self.inbox = self.inbox_folder
+        self.inbox = FakeInbox()
+        self.version = "Exchange2019"
+        self.msg_folder_root = type(self).root
         self.fetch_args: dict[str, object] | None = None
-        MailboxAccount.last_instance = self
+        FakeAccount.last_instance = self
 
     def fetch(self, **kwargs: object) -> list[object]:
         self.fetch_args = kwargs
         return self.fetched
 
 
-def test_client_lists_only_mail_folders_and_preserves_returned_hierarchy(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    parent = MailFolder("parent")
-    child = MailFolder("child", parent_id="parent")
-    calendar = CalendarFolder("calendar", parent_id="parent")
-    conversation = ConversationFolder("conversation", parent_id="parent")
-    sync_issues = SyncIssuesFolder("sync-issues", parent_id="parent")
-    hidden = HiddenMailFolder("hidden", parent_id="parent")
-    MailboxAccount.folders = [
-        parent,
-        child,
-        calendar,
-        conversation,
-        sync_issues,
-        hidden,
-    ]
-    _set_mailbox_account(monkeypatch)
+class FailingAccount:
+    error: Exception = TransportError("failure")
 
-    folders = EwsClient().list_folders(_profile(), SecretStr("top-secret"))
+    def __init__(self, **kwargs: object) -> None:
+        del kwargs
 
-    assert [folder.id for folder in folders] == ["parent", "child", "conversation"]
-    assert folders[0].parent_id is None
-    assert folders[1].parent_id == "parent"
-    assert folders[0].well_known_name == "inbox"
-
-
-def test_client_lists_messages_with_minimum_fields_filters_and_limit_plus_one(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    items = [_message("1"), _message("2"), _message("3")]
-    queryset = FakeQuerySet(items)
-    inbox = MailFolder("inbox-id", queryset=queryset)
-    MailboxAccount.inbox_folder = inbox
-    MailboxAccount.folders = [inbox]
-    _set_mailbox_account(monkeypatch)
-    query = MessageListQuery.model_validate(
-        {
-            "read_state": "unread",
-            "sender": "sender@example.com",
-            "subject_contains": "report",
-            "body_contains": "deadline",
-            "received_from": "2026-09-01T00:00:00+02:00",
-            "received_before": "2026-10-01T00:00:00+02:00",
-            "limit": 2,
-        }
-    )
-
-    messages, has_more = EwsClient().list_messages(_profile(), SecretStr("top-secret"), query)
-
-    assert [message.id for message in messages] == ["1", "2"]
-    assert has_more is True
-    assert queryset.order == "-datetime_received"
-    assert queryset.requested_slice == slice(0, 3)
-    assert set(queryset.only_fields) == {
-        "parent_folder_id",
-        "subject",
-        "author",
-        "datetime_received",
-        "is_read",
-        "has_attachments",
-        "importance",
-    }
-    assert queryset.filters == {
-        "is_read": False,
-        "sender": "sender@example.com",
-        "subject__icontains": "report",
-        "body__icontains": "deadline",
-        "datetime_received__gte": query.received_from,
-        "datetime_received__lt": query.received_before,
-    }
-
-
-def test_client_resolves_opaque_folder_id_and_read_filter(monkeypatch: MonkeyPatch) -> None:
-    queryset = FakeQuerySet([_message("1")])
-    folder = MailFolder("opaque-id", queryset=queryset)
-    MailboxAccount.folders = [folder]
-    _set_mailbox_account(monkeypatch)
-
-    messages, has_more = EwsClient().list_messages(
-        _profile(),
-        SecretStr("top-secret"),
-        MessageListQuery(folder="opaque-id", read_state=ReadState.READ, limit=2),
-    )
-
-    assert len(messages) == 1
-    assert has_more is False
-    assert queryset.filters == {"is_read": True}
-
-
-@pytest.mark.parametrize(
-    ("folder", "expected_error"),
-    [("calendar", InvalidFolderError), ("missing", FolderNotFoundError)],
-)
-def test_client_rejects_invalid_or_missing_folders(
-    monkeypatch: MonkeyPatch, folder: str, expected_error: type[Exception]
-) -> None:
-    MailboxAccount.folders = [CalendarFolder("calendar")]
-    _set_mailbox_account(monkeypatch)
-
-    with pytest.raises(expected_error):
-        EwsClient().list_messages(
-            _profile(), SecretStr("top-secret"), MessageListQuery(folder=folder)
-        )
+    @property
+    def inbox(self) -> object:
+        raise self.error
 
 
 class FakeMessage:
@@ -321,6 +145,10 @@ class FakeMessage:
     attachments: object
 
 
+class FakeMeetingItem(FakeMessage):
+    pass
+
+
 class FakeHtmlBody:
     def __str__(self) -> str:
         return "<p>Body</p>"
@@ -335,77 +163,223 @@ class FakeFileAttachment:
     content_id: object
 
 
-def test_client_gets_detailed_message_and_maps_headers_and_attachments(
+def test_access_builds_account_and_refreshes_inbox(monkeypatch: MonkeyPatch) -> None:
+    _patch_account(monkeypatch, FakeAccount)
+
+    result = EwsClient().test_access(_profile(), SecretStr("secret"))
+
+    account = FakeAccount.last_instance
+    assert account is not None
+    assert account.kwargs["primary_smtp_address"] == "agent@example.com"
+    assert account.inbox.refreshed is True
+    assert result.server_version == "Exchange2019"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (UnauthorizedError("bad credentials"), EwsAuthenticationError),
+        (TransportError("network"), EwsServiceError),
+    ],
+)
+def test_access_translates_ews_errors(
+    monkeypatch: MonkeyPatch, error: Exception, expected: type[Exception]
+) -> None:
+    FailingAccount.error = error
+    _patch_account(monkeypatch, FailingAccount)
+    with pytest.raises(expected):
+        EwsClient().test_access(_profile(), SecretStr("secret"))
+
+
+def test_sync_hierarchy_consumes_generator_and_filters_visible_folders(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    item = FakeMessage()
-    for name, value in vars(_message("message-id")).items():
-        setattr(item, name, value)
-    item.sender = _mailbox("sender@example.com", "Sender")
-    item.to_recipients = [_mailbox("to@example.com", "To")]
-    item.cc_recipients = []
-    item.bcc_recipients = None
-    item.reply_to = [_mailbox("reply@example.com", None)]
-    item.datetime_sent = datetime.fromisoformat("2026-09-11T11:59:00+02:00")
-    item.datetime_created = datetime.fromisoformat("2026-09-11T11:58:00+02:00")
-    item.message_id = "<internet-id@example.com>"
-    item.in_reply_to = "<parent@example.com>"
-    item.body = FakeHtmlBody()
-    item.headers = [
-        SimpleNamespace(name="X-Test", value="one"),
-        SimpleNamespace(name="X-Test", value="two"),
+    root = FakeRoot()
+    parent = MailFolder("parent")
+    child = MailFolder("child", parent_id="parent")
+    hidden = HiddenFolder("hidden")
+    calendar = CalendarFolder("calendar")
+    deleted = SimpleNamespace(id="deleted")
+    root.changes = [
+        ("create", parent),
+        ("update", child),
+        ("create", hidden),
+        ("update", calendar),
+        ("delete", deleted),
     ]
-    attachment = FakeFileAttachment()
-    attachment.attachment_id = SimpleNamespace(id="attachment-id")
-    attachment.name = "report.pdf"
-    attachment.content_type = "application/pdf"
-    attachment.size = 123
-    attachment.is_inline = False
-    attachment.content_id = None
-    item.attachments = [attachment]
-    MailboxAccount.fetched = [item]
-    _set_mailbox_account(monkeypatch)
+    FakeAccount.root = root
+    _patch_account(monkeypatch, FakeAccount)
+
+    result = EwsClient().sync_hierarchy(_profile(), SecretStr("secret"), "old-state")
+
+    assert result.sync_state == "hierarchy-state-2"
+    assert [change.kind for change in result.changes] == [
+        FolderChangeKind.CREATE,
+        FolderChangeKind.UPDATE,
+        FolderChangeKind.DELETE,
+        FolderChangeKind.DELETE,
+    ]
+    assert result.changes[1].folder is not None
+    assert result.changes[1].folder.parent_id == "parent"
+    assert result.well_known_folder_ids == {"inbox": "parent"}
+    assert root.sync_calls[0][0] == "old-state"
+    assert "is_hidden" in root.sync_calls[0][1]
+
+
+def test_sync_items_maps_all_change_types_with_id_only(monkeypatch: MonkeyPatch) -> None:
+    root = FakeRoot()
+    folder = MailFolder("folder-id")
+    folder.changes = [
+        ("create", SimpleNamespace(id="created", changekey="ck-1")),
+        ("update", SimpleNamespace(id="updated", changekey="ck-2")),
+        ("delete", SimpleNamespace(id="deleted", changekey="ck-3")),
+        (
+            "read_flag_change",
+            (SimpleNamespace(id="read", changekey="ck-4"), True),
+        ),
+    ]
+    root.folders = [folder]
+    FakeAccount.root = root
+    _patch_account(monkeypatch, FakeAccount)
+    monkeypatch.setattr("ews.exchange.client.Message", SimpleNamespace)
+    _patch_folder_from_id(monkeypatch, folder)
+
+    result = EwsClient().sync_items(_profile(), SecretStr("secret"), "folder-id", "item-state-1")
+
+    assert result.sync_state == "item-state-2"
+    assert [change.kind for change in result.changes] == list(MessageChangeKind)
+    assert result.changes[-1].is_read is True
+    assert folder.sync_calls == [("item-state-1", [])]
+
+
+def test_sync_items_binds_directly_to_the_hierarchy_folder_id(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    folder = MailFolder("opaque-id")
+    FakeAccount.root = FakeRoot()
+    _patch_account(monkeypatch, FakeAccount)
+    _patch_folder_from_id(monkeypatch, folder)
+
+    EwsClient().sync_items(_profile(), SecretStr("secret"), "opaque-id", None)
+
+    assert folder.sync_calls == [(None, [])]
+
+
+def test_invalid_sync_state_has_distinct_application_error(monkeypatch: MonkeyPatch) -> None:
+    class InvalidRoot(FakeRoot):
+        def sync_hierarchy(self, *, sync_state: str | None, only_fields: tuple[str, ...]) -> object:
+            del sync_state, only_fields
+            raise ErrorInvalidSyncStateData("invalid")
+
+    FakeAccount.root = InvalidRoot()
+    _patch_account(monkeypatch, FakeAccount)
+    with pytest.raises(InvalidSyncStateError):
+        EwsClient().sync_hierarchy(_profile(), SecretStr("secret"), "bad")
+
+
+def test_fetch_messages_maps_full_detail_and_enforces_batch_limit(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    item = _message("message-id")
+    FakeAccount.fetched = [item]
+    FakeAccount.root = FakeRoot()
+    _patch_account(monkeypatch, FakeAccount)
     monkeypatch.setattr("ews.exchange.client.Message", FakeMessage)
     monkeypatch.setattr("ews.exchange.client.HTMLBody", FakeHtmlBody)
     monkeypatch.setattr("ews.exchange.client.FileAttachment", FakeFileAttachment)
 
-    detail = EwsClient().get_message(_profile(), SecretStr("top-secret"), "message-id")
+    messages = EwsClient().fetch_messages(
+        _profile(), SecretStr("secret"), [("message-id", "change-key")]
+    )
 
-    account = MailboxAccount.last_instance
+    assert messages[0].body.content == "<p>Body</p>"
+    assert messages[0].received_at.tzinfo is UTC
+    account = FakeAccount.last_instance
     assert account is not None
     assert account.fetch_args is not None
-    assert account.fetch_args["ids"] == [("message-id", None)]
-    assert detail.body.model_dump() == {"content_type": "html", "content": "<p>Body</p>"}
-    assert [header.value for header in detail.internet_headers] == ["one", "two"]
-    assert detail.attachments[0].model_dump() == {
-        "id": "attachment-id",
-        "kind": "file",
-        "name": "report.pdf",
-        "content_type": "application/pdf",
-        "size": 123,
-        "is_inline": False,
-        "content_id": None,
-    }
-    assert detail.to[0].address == "to@example.com"
+    assert account.fetch_args["ids"] == [("message-id", "change-key")]
+    with pytest.raises(ValueError, match="at most 10"):
+        EwsClient().fetch_messages(
+            _profile(), SecretStr("secret"), [(str(index), "ck") for index in range(11)]
+        )
 
 
-def test_client_maps_missing_message(monkeypatch: MonkeyPatch) -> None:
-    MailboxAccount.fetched = []
-    _set_mailbox_account(monkeypatch)
+def test_fetch_messages_accepts_meeting_items(monkeypatch: MonkeyPatch) -> None:
+    item = _meeting_item("meeting-id")
+    FakeAccount.fetched = [item]
+    _patch_account(monkeypatch, FakeAccount)
+    monkeypatch.setattr("ews.exchange.client.BaseMeetingItem", FakeMeetingItem)
 
-    with pytest.raises(MessageNotFoundError):
-        EwsClient().get_message(_profile(), SecretStr("top-secret"), "missing")
+    messages = EwsClient().fetch_messages(
+        _profile(), SecretStr("secret"), [("meeting-id", "change-key")]
+    )
+
+    assert messages[0].id == "meeting-id"
+    assert messages[0].subject == "Report"
 
 
-def _load_error_type(path: str) -> type[Exception]:
-    if path.endswith("UnauthorizedError"):
-        from exchangelib.errors import UnauthorizedError
+def test_fetch_messages_preserves_internal_exchange_addresses(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    item = _message("message-id")
+    item.author = SimpleNamespace(email_address="dan")
+    item.sender = SimpleNamespace(name="Dan", email_address="dan")
+    item.to_recipients = [SimpleNamespace(name="Agent", email_address="DOMAIN\\agent")]
+    FakeAccount.fetched = [item]
+    _patch_account(monkeypatch, FakeAccount)
+    monkeypatch.setattr("ews.exchange.client.Message", FakeMessage)
 
-        return UnauthorizedError
+    messages = EwsClient().fetch_messages(
+        _profile(), SecretStr("secret"), [("message-id", "change-key")]
+    )
 
-    from exchangelib.errors import TransportError
+    assert messages[0].from_address == "dan"
+    assert messages[0].sender is not None
+    assert messages[0].sender.address == "dan"
+    assert messages[0].to[0].address == "DOMAIN\\agent"
 
-    return TransportError
+
+def test_sync_items_ignores_unsupported_creates_and_removes_updates(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    root = FakeRoot()
+    folder = MailFolder("folder-id")
+    folder.changes = [
+        ("create", SimpleNamespace(id="unsupported-create", changekey="ck-1")),
+        ("update", SimpleNamespace(id="unsupported-update", changekey="ck-2")),
+    ]
+    root.folders = [folder]
+    FakeAccount.root = root
+    _patch_account(monkeypatch, FakeAccount)
+    _patch_folder_from_id(monkeypatch, folder)
+
+    result = EwsClient().sync_items(_profile(), SecretStr("secret"), "folder-id", "item-state-1")
+
+    assert len(result.changes) == 1
+    assert result.changes[0].kind is MessageChangeKind.DELETE
+    assert result.changes[0].message_id == "unsupported-update"
+
+
+def test_fetch_messages_rejects_incomplete_response(monkeypatch: MonkeyPatch) -> None:
+    FakeAccount.fetched = []
+    _patch_account(monkeypatch, FakeAccount)
+    with pytest.raises(EwsServiceError, match="incomplete"):
+        EwsClient().fetch_messages(_profile(), SecretStr("secret"), [("id", "ck")])
+
+
+def _patch_account(monkeypatch: MonkeyPatch, account_type: type[object]) -> None:
+    monkeypatch.setattr("ews.exchange.client.Credentials", FakeCredentials)
+    monkeypatch.setattr("ews.exchange.client.Configuration", FakeConfiguration)
+    monkeypatch.setattr("ews.exchange.client.Account", account_type)
+
+
+def _patch_folder_from_id(monkeypatch: MonkeyPatch, folder: MailFolder) -> None:
+    def folder_from_id(account: object, folder_id: str) -> MailFolder:
+        del account
+        assert folder_id == folder.id
+        return folder
+
+    monkeypatch.setattr("ews.exchange.client._folder_from_id", folder_from_id)
 
 
 def _profile() -> Profile:
@@ -417,26 +391,42 @@ def _profile() -> Profile:
     )
 
 
-def _set_mailbox_account(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setattr("ews.exchange.client.Credentials", FakeCredentials)
-    monkeypatch.setattr("ews.exchange.client.Configuration", FakeConfiguration)
-    monkeypatch.setattr("ews.exchange.client.Account", MailboxAccount)
+def _message(message_id: str) -> FakeMessage:
+    item = FakeMessage()
+    item.id = message_id
+    item.changekey = "change-key"
+    item.parent_folder_id = SimpleNamespace(id="folder-id")
+    item.subject = "Report"
+    item.author = SimpleNamespace(email_address="author@example.com")
+    item.sender = SimpleNamespace(name="Sender", email_address="sender@example.com")
+    item.datetime_received = datetime(2026, 9, 12, 10, tzinfo=UTC)
+    item.is_read = False
+    item.has_attachments = True
+    item.importance = "Normal"
+    item.to_recipients = [SimpleNamespace(name="To", email_address="to@example.com")]
+    item.cc_recipients = []
+    item.bcc_recipients = None
+    item.reply_to = []
+    item.datetime_sent = datetime(2026, 9, 12, 9, tzinfo=UTC)
+    item.datetime_created = None
+    item.message_id = "<internet@example.com>"
+    item.in_reply_to = None
+    item.body = FakeHtmlBody()
+    item.headers = [SimpleNamespace(name="X-Test", value="value")]
+    attachment = FakeFileAttachment()
+    attachment.attachment_id = SimpleNamespace(id="attachment-id")
+    attachment.name = "report.pdf"
+    attachment.content_type = "application/pdf"
+    attachment.size = 123
+    attachment.is_inline = False
+    attachment.content_id = None
+    item.attachments = [attachment]
+    return item
 
 
-def _message(message_id: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=message_id,
-        changekey=f"change-{message_id}",
-        parent_folder_id=SimpleNamespace(id="inbox-id"),
-        subject="Report",
-        author=_mailbox("sender@example.com", "Sender"),
-        sender=None,
-        datetime_received=datetime.fromisoformat("2026-09-11T12:00:00+02:00"),
-        is_read=False,
-        has_attachments=True,
-        importance="Normal",
-    )
-
-
-def _mailbox(address: str, name: str | None) -> SimpleNamespace:
-    return SimpleNamespace(email_address=address, name=name)
+def _meeting_item(message_id: str) -> FakeMeetingItem:
+    message = _message(message_id)
+    meeting = FakeMeetingItem()
+    for name, value in vars(message).items():
+        setattr(meeting, name, value)
+    return meeting

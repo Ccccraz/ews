@@ -17,6 +17,17 @@ from ews.models.mailbox import (
 )
 from ews.models.profile import Profile
 from ews.models.server import Server
+from ews.models.sync import (
+    FolderChange,
+    FolderChangeKind,
+    FolderSyncCounts,
+    FolderSyncResult,
+    MailboxSyncResult,
+    MessageChange,
+    MessageChangeKind,
+    MessageSyncCounts,
+    MessageSyncResult,
+)
 from ews.models.user import User
 
 __all__ = [
@@ -24,6 +35,10 @@ __all__ = [
     "ConnectionTestResult",
     "Folder",
     "FolderListResult",
+    "FolderChange",
+    "FolderChangeKind",
+    "FolderSyncCounts",
+    "FolderSyncResult",
     "Importance",
     "InternetHeader",
     "MailboxAddress",
@@ -33,6 +48,11 @@ __all__ = [
     "MessageListQuery",
     "MessageListResult",
     "MessageSummary",
+    "MessageChange",
+    "MessageChangeKind",
+    "MessageSyncCounts",
+    "MessageSyncResult",
+    "MailboxSyncResult",
     "Pagination",
     "Profile",
     "ReadState",

@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from pathlib import Path
 
 import keyring
@@ -9,12 +10,15 @@ from ews.config import PasswordStore, ProfileStore
 from ews.models import (
     ConnectionTestResult,
     Folder,
+    FolderSyncResult,
     MessageBody,
     MessageDetail,
     MessageListQuery,
     MessageSummary,
+    MessageSyncResult,
     Profile,
 )
+from ews.storage import SqliteMailboxStore
 
 
 class FakeGateway:
@@ -79,11 +83,36 @@ class FakeGateway:
             attachments=[],
         )
 
+    def sync_hierarchy(
+        self, profile: Profile, password: SecretStr, sync_state: str | None
+    ) -> FolderSyncResult:
+        del profile, password, sync_state
+        raise AssertionError("Not used")
+
+    def sync_items(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        folder_id: str,
+        sync_state: str | None,
+    ) -> MessageSyncResult:
+        del profile, password, folder_id, sync_state
+        raise AssertionError("Not used")
+
+    def fetch_messages(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_ids: Sequence[tuple[str, str]],
+    ) -> list[MessageDetail]:
+        del profile, password, message_ids
+        raise AssertionError("Not used")
+
 
 def test_service_coordinates_all_read_use_cases(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     gateway = FakeGateway()
     service = _service(tmp_path, monkeypatch, gateway)
-    query = MessageListQuery(offset=10, limit=2)
+    query = MessageListQuery(offset=0, limit=2)
 
     test_result = service.test_access("AGENT@EXAMPLE.COM")
     folders = service.list_folders("domain\\AGENT")
@@ -95,12 +124,11 @@ def test_service_coordinates_all_read_use_cases(tmp_path: Path, monkeypatch: Mon
     assert folders.folders[0].well_known_name == "inbox"
     assert messages.messages[0].id == "message-id"
     assert messages.pagination.model_dump() == {
-        "offset": 10,
+        "offset": 0,
         "limit": 2,
-        "has_more": True,
-        "next_offset": 12,
+        "has_more": False,
+        "next_offset": None,
     }
-    assert gateway.query is query
     assert detail.message.body.content == "Body"
 
 
@@ -133,7 +161,52 @@ def _service(
         return "top-secret"
 
     monkeypatch.setattr(keyring, "get_password", get_password)
-    return MailboxApplicationService(profile_store, PasswordStore(), gateway)
+    store = SqliteMailboxStore(tmp_path / "cache.db")
+    store.initialize()
+    store.replace_folders(
+        "agent@example.com",
+        [
+            Folder(
+                id="folder-id",
+                parent_id=None,
+                name="Inbox",
+                well_known_name="inbox",
+                total_count=2,
+                unread_count=1,
+            )
+        ],
+    )
+    summary = _summary()
+    store.upsert_messages(
+        "agent@example.com",
+        [
+            MessageDetail(
+                id=summary.id,
+                change_key=summary.change_key,
+                parent_folder_id=summary.parent_folder_id,
+                subject=summary.subject,
+                from_address=summary.from_address,
+                received_at=summary.received_at,
+                is_read=summary.is_read,
+                has_attachments=summary.has_attachments,
+                importance=summary.importance,
+                sender=None,
+                to=[],
+                cc=[],
+                bcc=[],
+                reply_to=[],
+                sent_at=None,
+                created_at=None,
+                internet_message_id=None,
+                in_reply_to=None,
+                body=MessageBody(content_type="text", content="Body"),
+                internet_headers=[],
+                attachments=[],
+            )
+        ],
+    )
+    store.mark_ready("agent@example.com")
+    return MailboxApplicationService(profile_store, PasswordStore(), gateway, store)
 
 
 def _summary() -> MessageSummary:

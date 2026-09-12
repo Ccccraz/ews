@@ -1,6 +1,7 @@
 """Local mailbox persistence."""
 
 from ews.storage.sqlite import (
+    MailboxCacheNotReadyError,
     MailboxStoreError,
     SqliteMailboxStore,
     UnsupportedCacheSchemaVersionError,
@@ -8,6 +9,7 @@ from ews.storage.sqlite import (
 )
 
 __all__ = [
+    "MailboxCacheNotReadyError",
     "MailboxStoreError",
     "SqliteMailboxStore",
     "UnsupportedCacheSchemaVersionError",
