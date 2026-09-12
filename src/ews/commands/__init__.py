@@ -1,3 +1,4 @@
+from ews.commands.attachment import save_attachment
 from ews.commands.auth import delete_password, password_status, set_password
 from ews.commands.config import show_config, show_config_path
 from ews.commands.doctor import doctor
@@ -25,6 +26,7 @@ __all__ = [
     "password_status",
     "reply_all_to_message",
     "reply_to_message",
+    "save_attachment",
     "send_message",
     "set_profile",
     "set_password",

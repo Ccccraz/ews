@@ -1,17 +1,21 @@
 from collections.abc import Sequence
+from pathlib import Path
 
 from pydantic import SecretStr
 
 from ews.application.errors import (
+    AttachmentNotFoundError,
     FolderNotFoundError,
     InvalidSyncStateError,
     MessageNotFoundError,
+    UnsupportedAttachmentError,
 )
 from ews.application.gateway import MailboxGateway
 from ews.application.progress import SyncProgressReporter
 from ews.application.tls import TlsProbe
 from ews.config import PasswordStore, ProfileStore
 from ews.models import (
+    AttachmentSaveResult,
     ConnectionTestResult,
     DoctorResult,
     FolderListResult,
@@ -235,11 +239,36 @@ class MailboxApplicationService:
         password = self._password_store.get(profile)
         return self._gateway.move_message(profile, password, message_id, folder_id)
 
-    def _require_cached_message(self, profile: Profile, message_id: str) -> None:
+    def save_attachment(
+        self,
+        selected_user: str,
+        message_id: str,
+        attachment_id: str,
+        destination: Path,
+    ) -> AttachmentSaveResult:
+        """Stream one cached message's file attachment to a local path."""
+        profile = self._load_profile(selected_user)
+        message = self._require_cached_message(profile, message_id)
+        attachment = next(
+            (item for item in message.attachments if item.id == attachment_id),
+            None,
+        )
+        if attachment is None:
+            raise AttachmentNotFoundError(f"Attachment not found: {attachment_id}")
+        if attachment.kind != "file":
+            raise UnsupportedAttachmentError(f"Only file attachments can be saved: {attachment_id}")
+        password = self._password_store.get(profile)
+        return self._gateway.save_attachment(
+            profile, password, message_id, attachment_id, destination
+        )
+
+    def _require_cached_message(self, profile: Profile, message_id: str) -> MessageDetail:
         mailbox = str(profile.user.mailbox)
         self._store.require_ready(mailbox)
-        if self._store.get_message(mailbox, message_id) is None:
+        message = self._store.get_message(mailbox, message_id)
+        if message is None:
             raise MessageNotFoundError(f"Message not found: {message_id}")
+        return message
 
     def _fetch_in_batches(
         self,

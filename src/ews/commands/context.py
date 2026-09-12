@@ -4,10 +4,14 @@ from dataclasses import dataclass
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from ews.application import (
+    AttachmentNotFoundError,
+    DestinationExistsError,
     FolderNotFoundError,
+    InvalidDestinationError,
     InvalidFolderError,
     MailboxApplicationService,
     MessageNotFoundError,
+    UnsupportedAttachmentError,
     UserNotFoundError,
 )
 from ews.config import (
@@ -70,13 +74,20 @@ def run_read[ResultT: BaseModel](
 def run_write[ResultT: BaseModel](
     context: CommandContext, operation: Callable[[str], ResultT]
 ) -> int:
-    """Run a write use case and map expected failures to the CLI contract."""
+    """Run a mutating use case, either remote or a local download, and map failures."""
     if context.user is None:
         return fail("invalid_argument", "--user is required", 2)
     try:
         result = operation(context.user)
-    except (ValidationError, EwsRejectedError) as error:
+    except (
+        ValidationError,
+        EwsRejectedError,
+        UnsupportedAttachmentError,
+        InvalidDestinationError,
+    ) as error:
         return fail("invalid_argument", str(error), 2)
+    except DestinationExistsError as error:
+        return fail("destination_exists", str(error), 2)
     except (ProfileNotFoundError, InvalidProfileError, OSError) as error:
         return fail("configuration_error", str(error), 2)
     except (PasswordNotFoundError, PasswordStoreError, EwsAuthenticationError) as error:
@@ -89,7 +100,12 @@ def run_write[ResultT: BaseModel](
             f"Mailbox cache is not ready; run ews --user {context.user} sync",
             4,
         )
-    except (FolderNotFoundError, MessageNotFoundError, EwsNotFoundError) as error:
+    except (
+        FolderNotFoundError,
+        MessageNotFoundError,
+        AttachmentNotFoundError,
+        EwsNotFoundError,
+    ) as error:
         return fail("resource_not_found", str(error), 4)
     except MailboxStoreError as error:
         return fail("cache_error", str(error), 2)

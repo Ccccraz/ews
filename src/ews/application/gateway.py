@@ -1,9 +1,11 @@
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Protocol
 
 from pydantic import SecretStr
 
 from ews.models import (
+    AttachmentSaveResult,
     ConnectionTestResult,
     FolderSyncResult,
     MessageDetail,
@@ -62,3 +64,12 @@ class MailboxGateway(Protocol):
     def move_message(
         self, profile: Profile, password: SecretStr, message_id: str, folder_id: str
     ) -> MessageMoveResult: ...
+
+    def save_attachment(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        attachment_id: str,
+        destination: Path,
+    ) -> AttachmentSaveResult: ...

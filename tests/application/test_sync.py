@@ -8,6 +8,7 @@ from pytest import MonkeyPatch
 from ews.application import InvalidSyncStateError, MailboxApplicationService
 from ews.config import PasswordStore, ProfileStore
 from ews.models import (
+    AttachmentSaveResult,
     ConnectionTestResult,
     Folder,
     FolderChange,
@@ -119,6 +120,17 @@ class SyncGateway:
         self, profile: Profile, password: SecretStr, message_id: str, folder_id: str
     ) -> MessageMoveResult:
         del profile, password, message_id, folder_id
+        raise AssertionError("Not used")
+
+    def save_attachment(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        attachment_id: str,
+        destination: Path,
+    ) -> AttachmentSaveResult:
+        del profile, password, message_id, attachment_id, destination
         raise AssertionError("Not used")
 
 

@@ -19,6 +19,7 @@ from ews.exchange import (
     EwsServiceError,
 )
 from ews.models import (
+    AttachmentSaveResult,
     ConnectionTestResult,
     Folder,
     FolderSyncResult,
@@ -47,6 +48,7 @@ class WriteGateway:
         self.replies: list[tuple[str, OutgoingReply, bool]] = []
         self.read_states: list[tuple[str, bool]] = []
         self.moves: list[tuple[str, str]] = []
+        self.saved: list[tuple[str, str, Path]] = []
 
     def test_access(self, profile: Profile, password: SecretStr) -> ConnectionTestResult:
         del profile, password
@@ -136,6 +138,27 @@ class WriteGateway:
             message_id="moved-id",
             change_key="moved-change-1",
             folder_id=folder_id,
+        )
+
+    def save_attachment(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        attachment_id: str,
+        destination: Path,
+    ) -> AttachmentSaveResult:
+        del password
+        self._raise_error()
+        self.saved.append((message_id, attachment_id, destination))
+        return AttachmentSaveResult(
+            user=profile.user.username,
+            message_id=message_id,
+            attachment_id=attachment_id,
+            name="report.pdf",
+            content_type="application/pdf",
+            path=destination,
+            bytes_written=7,
         )
 
     def _raise_error(self) -> None:
