@@ -6,7 +6,7 @@ from typing import TextIO, cast
 
 import keyring
 import pytest
-from keyring.errors import KeyringError
+from keyring.errors import KeyringError, PasswordDeleteError
 from pydantic import JsonValue
 from pytest import CaptureFixture, MonkeyPatch
 
@@ -152,6 +152,67 @@ def test_auth_status_handles_keyring_failure(
     assert _error(output)["code"] == "authentication_error"
 
 
+def test_auth_delete_password_removes_keychain_password(
+    tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
+) -> None:
+    _configure_profile(tmp_path, monkeypatch)
+    deleted: list[tuple[str, str]] = []
+
+    def delete_stored_password(service: str, username: str) -> None:
+        deleted.append((service, username))
+
+    monkeypatch.setattr(keyring, "delete_password", delete_stored_password)
+
+    exit_code, output, stderr = _invoke(capsys, command="delete-password")
+
+    assert exit_code == 0
+    assert stderr == ""
+    assert output == {
+        "schema_version": 1,
+        "ok": True,
+        "data": {"username": "DOMAIN\\agent"},
+    }
+    assert deleted == [("taskseed.ews:mail.example.com", "DOMAIN\\agent")]
+
+
+def test_auth_delete_password_handles_missing_profile(
+    tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    exit_code, output, stderr = _invoke(capsys, command="delete-password")
+
+    assert exit_code == 2
+    assert stderr == ""
+    assert _error(output)["code"] == "configuration_error"
+
+
+def test_auth_delete_password_handles_missing_password(
+    tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
+) -> None:
+    _configure_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(keyring, "delete_password", _delete_missing_password)
+
+    exit_code, output, stderr = _invoke(capsys, command="delete-password")
+
+    assert exit_code == 3
+    assert stderr == ""
+    assert _error(output)["code"] == "authentication_error"
+
+
+def test_auth_delete_password_handles_keyring_failure(
+    tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
+) -> None:
+    _configure_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(keyring, "delete_password", _failing_password_delete)
+
+    exit_code, output, stderr = _invoke(capsys, command="delete-password")
+
+    assert exit_code == 3
+    assert stderr == ""
+    assert _error(output)["code"] == "authentication_error"
+
+
 def _configure_profile(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     ProfileStore().save(
@@ -208,5 +269,15 @@ def _read_missing_password(service: str, username: str) -> None:
 
 
 def _failing_password_read(service: str, username: str) -> str | None:
+    del service, username
+    raise KeyringError("Keyring is unavailable")
+
+
+def _delete_missing_password(service: str, username: str) -> None:
+    del service, username
+    raise PasswordDeleteError("Password does not exist")
+
+
+def _failing_password_delete(service: str, username: str) -> None:
     del service, username
     raise KeyringError("Keyring is unavailable")
