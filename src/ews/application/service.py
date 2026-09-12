@@ -9,9 +9,11 @@ from ews.application.errors import (
 )
 from ews.application.gateway import MailboxGateway
 from ews.application.progress import SyncProgressReporter
+from ews.application.tls import TlsProbe
 from ews.config import PasswordStore, ProfileStore
 from ews.models import (
     ConnectionTestResult,
+    DoctorResult,
     FolderListResult,
     MailboxSyncResult,
     MessageChangeKind,
@@ -24,6 +26,7 @@ from ews.models import (
     Profile,
 )
 from ews.storage import SqliteMailboxStore
+from ews.system import SystemTlsProbe
 
 _GET_ITEM_BATCH_SIZE = 10
 
@@ -41,16 +44,32 @@ class MailboxApplicationService:
         password_store: PasswordStore,
         gateway: MailboxGateway,
         store: SqliteMailboxStore | None = None,
+        tls_probe: TlsProbe | None = None,
     ) -> None:
         self._profile_store = profile_store
         self._password_store = password_store
         self._gateway = gateway
         self._store = SqliteMailboxStore() if store is None else store
+        self._tls_probe = SystemTlsProbe() if tls_probe is None else tls_probe
 
     def test_access(self, selected_user: str) -> ConnectionTestResult:
         profile = self._load_profile(selected_user)
         password = self._password_store.get(profile)
         return self._gateway.test_access(profile, password)
+
+    def diagnose(self, selected_user: str | None = None) -> DoctorResult:
+        """Verify profile, keychain, system TLS and EWS login in one run."""
+        profile = self._profile_store.load()
+        if selected_user is not None:
+            _require_selected_user(profile, selected_user)
+        password = self._password_store.get(profile)
+        tls = self._tls_probe.probe(profile)
+        return DoctorResult(
+            profile_path=self._profile_store.path,
+            endpoint=profile.server.endpoint,
+            tls=tls,
+            connection=self._gateway.test_access(profile, password),
+        )
 
     def sync(
         self,
@@ -188,13 +207,17 @@ class MailboxApplicationService:
 
     def _load_profile(self, selected_user: str) -> Profile:
         profile = self._profile_store.load()
-        expected = selected_user.casefold()
-        if expected not in {
-            profile.user.username.casefold(),
-            str(profile.user.mailbox).casefold(),
-        }:
-            raise UserNotFoundError(f"Profile not found for user: {selected_user}")
+        _require_selected_user(profile, selected_user)
         return profile
+
+
+def _require_selected_user(profile: Profile, selected_user: str) -> None:
+    expected = selected_user.casefold()
+    if expected not in {
+        profile.user.username.casefold(),
+        str(profile.user.mailbox).casefold(),
+    }:
+        raise UserNotFoundError(f"Profile not found for user: {selected_user}")
 
 
 def _add_message_counts(left: MessageSyncCounts, right: MessageSyncCounts) -> MessageSyncCounts:

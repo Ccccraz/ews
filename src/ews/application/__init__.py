@@ -7,6 +7,7 @@ from ews.application.errors import (
 from ews.application.gateway import MailboxGateway
 from ews.application.progress import SyncProgressReporter
 from ews.application.service import MailboxApplicationService, UserNotFoundError
+from ews.application.tls import TlsProbe
 
 __all__ = [
     "FolderNotFoundError",
@@ -16,5 +17,6 @@ __all__ = [
     "MailboxGateway",
     "SyncProgressReporter",
     "MessageNotFoundError",
+    "TlsProbe",
     "UserNotFoundError",
 ]

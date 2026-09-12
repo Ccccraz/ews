@@ -1,11 +1,12 @@
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 import keyring
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
-from ews.application import MailboxApplicationService, UserNotFoundError
+from ews.application import MailboxApplicationService, TlsProbe, UserNotFoundError
 from ews.config import PasswordStore, ProfileStore
 from ews.models import (
     ConnectionTestResult,
@@ -17,6 +18,7 @@ from ews.models import (
     MessageSummary,
     MessageSyncResult,
     Profile,
+    TlsCheckResult,
 )
 from ews.storage import SqliteMailboxStore
 
@@ -109,6 +111,22 @@ class FakeGateway:
         raise AssertionError("Not used")
 
 
+class FakeTlsProbe:
+    def __init__(self) -> None:
+        self.probed: list[str] = []
+
+    def probe(self, profile: Profile) -> TlsCheckResult:
+        self.probed.append(str(profile.server.endpoint))
+        return TlsCheckResult(
+            host="mail.example.com",
+            protocol="TLSv1.3",
+            cipher="TLS_AES_256_GCM_SHA384",
+            certificate_subject="commonName=mail.example.com",
+            certificate_issuer="commonName=Example Issuing CA",
+            certificate_expires_at=datetime(2027, 1, 1, tzinfo=UTC),
+        )
+
+
 def test_service_coordinates_all_read_use_cases(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     gateway = FakeGateway()
     service = _service(tmp_path, monkeypatch, gateway)
@@ -143,8 +161,49 @@ def test_service_rejects_a_different_user(tmp_path: Path, monkeypatch: MonkeyPat
         raise AssertionError("Expected UserNotFoundError")
 
 
+def test_service_diagnoses_profile_keychain_tls_and_login(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    tls_probe = FakeTlsProbe()
+    service = _service(tmp_path, monkeypatch, FakeGateway(), tls_probe)
+
+    result = service.diagnose()
+
+    assert result.profile_path == tmp_path / "profile.toml"
+    assert str(result.endpoint) == "https://mail.example.com/EWS/Exchange.asmx"
+    assert tls_probe.probed == ["https://mail.example.com/EWS/Exchange.asmx"]
+    assert result.tls.protocol == "TLSv1.3"
+    assert result.connection.server_version == "Exchange2019"
+
+
+def test_service_diagnosis_accepts_the_configured_mailbox(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    service = _service(tmp_path, monkeypatch, FakeGateway(), FakeTlsProbe())
+
+    result = service.diagnose("AGENT@EXAMPLE.COM")
+
+    assert result.connection.user == "DOMAIN\\agent"
+
+
+def test_service_diagnosis_rejects_a_different_user(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    service = _service(tmp_path, monkeypatch, FakeGateway(), FakeTlsProbe())
+
+    try:
+        service.diagnose("other")
+    except UserNotFoundError as error:
+        assert str(error) == "Profile not found for user: other"
+    else:
+        raise AssertionError("Expected UserNotFoundError")
+
+
 def _service(
-    tmp_path: Path, monkeypatch: MonkeyPatch, gateway: FakeGateway
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    gateway: FakeGateway,
+    tls_probe: TlsProbe | None = None,
 ) -> MailboxApplicationService:
     profile_store = ProfileStore(tmp_path / "profile.toml")
     profile_store.save(
@@ -206,7 +265,9 @@ def _service(
         ],
     )
     store.mark_ready("agent@example.com")
-    return MailboxApplicationService(profile_store, PasswordStore(), gateway, store)
+    return MailboxApplicationService(
+        profile_store, PasswordStore(), gateway, store, tls_probe=tls_probe
+    )
 
 
 def _summary() -> MessageSummary:
