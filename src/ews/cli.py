@@ -9,6 +9,9 @@ from truststore import inject_into_ssl
 from ews import __version__
 from ews.application import MailboxApplicationService, ProfileApplicationService
 from ews.commands import (
+    create_draft,
+    create_reply_all_draft,
+    create_reply_draft,
     delete_config,
     delete_password,
     doctor,
@@ -45,6 +48,7 @@ commands = App(
 )
 folder = App(name="folder", help="Read mail folders.")
 message = App(name="message", help="Read and write messages.")
+draft = App(name="draft", help="Save messages in Drafts without sending them.")
 attachment = App(name="attachment", help="Read message attachments.")
 config = App(name="config", help="Inspect configuration.")
 auth = App(name="auth", help="Manage authentication.")
@@ -60,6 +64,7 @@ commands.command(config)
 commands.command(auth)
 folder.command(list_folders, name="list")
 message.command(list_messages, name="list")
+message.command(draft)
 message.command(get_message, name="get")
 message.command(get_thread, name="thread")
 message.command(send_message, name="send")
@@ -67,6 +72,9 @@ message.command(reply_to_message, name="reply")
 message.command(reply_all_to_message, name="reply-all")
 message.command(mark_read, name="mark-read")
 message.command(move_message, name="move")
+draft.command(create_draft, name="create")
+draft.command(create_reply_draft, name="reply")
+draft.command(create_reply_all_draft, name="reply-all")
 attachment.command(save_attachment, name="save")
 config.command(show_config, name="show")
 config.command(list_config, name="list")

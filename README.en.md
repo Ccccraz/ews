@@ -8,7 +8,7 @@ This project puts agent tooling on top of a local Exchange mailbox. It does one 
 
 - **Machine-first output**: apart from `--help`/`--version`, every invocation writes exactly one JSON object to stdout; diagnostics always go to stderr.
 - **Local-first reads**: `sync` mirrors the mailbox into a local SQLite cache, and every read command only reads that cache, so reads do not depend on a stable network.
-- **Explicit, limited writes**: send, reply, mark read, move and download attachments — and **no ability to delete messages or folders**.
+- **Explicit, limited writes**: send, save drafts, reply, mark read, move and download attachments — and **no ability to delete messages or folders**.
 - **Credential safety**: the password lives only in the macOS Keychain and never reaches configuration files, command-line arguments, output or logs.
 
 ## Capabilities
@@ -19,7 +19,7 @@ This project puts agent tooling on top of a local Exchange mailbox. It does one 
 | Connectivity diagnostics | `test`, `doctor` |
 | Synchronization | `sync` (incremental and resumable) |
 | Reads | `folder list`, `message list`, `message get`, `message thread` |
-| Writes | `message send`, `message reply`, `message reply-all`, `message mark-read`, `message move` |
+| Writes | `message send`, `message reply`, `message reply-all`, `message draft create\|reply\|reply-all`, `message mark-read`, `message move` |
 | Attachments | `attachment save` (download only, streamed, never overwrites) |
 
 ## Requirements
@@ -74,6 +74,9 @@ ews --user agent message thread <message-id>
 
 # 7. Reply: provide only the text you want to add, the server generates the quote.
 "Thanks, will follow up tomorrow." | ews --user agent message reply-all <message-id> --body-file -
+
+# 8. Save a reply draft for human review without sending it.
+"Draft response" | ews --user agent message draft reply <message-id> --body-file -
 ```
 
 `--user` is a global option and accepts either the NTLM username or the mailbox address (case-insensitive).
@@ -92,6 +95,8 @@ ews --user agent message thread <message-id>
 | `message thread <id>` | One whole conversation | yes | yes |
 | `message send` | Send a new message | yes | no |
 | `message reply` / `reply-all <id>` | Reply to a message | yes | yes |
+| `message draft create` | Save a new message draft | yes | no |
+| `message draft reply` / `reply-all <id>` | Save a reply draft | yes | yes |
 | `message mark-read <id> [--unread]` | Mark a message read or unread | yes | yes |
 | `message move <id> --folder <id\|name>` | Move a message to another folder | yes | yes |
 | `attachment save <mid> <aid> --path <file>` | Stream one attachment to disk | yes | yes |
@@ -101,7 +106,7 @@ ews --user agent message thread <message-id>
 
 The `message list` filters combine with AND: `--folder`, `--read-state read|unread|any`, `--sender`, `--subject-contains`, `--body-contains`, `--received-from`, `--received-before`. Pagination uses `--limit` (default 50, maximum 200) and `--offset`. `message thread` accepts `--limit` (default 20, maximum 200) and `--offset`.
 
-Write commands take their body from `--body-file <path>` (`-` means stdin) and select the body type with `--content-type text|html` (default `text`).
+Write commands take their body from `--body-file <path>` (`-` means stdin) and select the body type with `--content-type text|html` (default `text`). `message draft create` may omit all recipients.
 
 ## Output contract
 
@@ -174,6 +179,7 @@ The old `$HOME/.config/taskseed/ews/profile.toml` is neither read nor migrated a
 - **Parse JSON from stdout only** and do not assume line counts; diagnostics and progress appear on stderr (`sync --progress` being the exception).
 - **Decide from `code` and `retryable`**: `service_error` may be retried; `cache_not_ready` means run `sync` first; `resource_not_found` means the local cache does not hold that item yet — run `sync` and look again.
 - **Write commands never ask for confirmation**: invoking one is the authorization. Ask the user before calling them when consent is required.
+- **Draft commands never send**: `message draft create|reply|reply-all` only saves to Exchange Drafts. Run `sync` before reading the new draft through local commands.
 - **There is no delete capability**: the CLI exposes no command that deletes a message or folder, so anything produced by tests or mistakes has to be cleaned up manually.
 - **Attachments are download-only and never overwrite**: `attachment save` returns `destination_exists`/2 when the target file already exists and offers no `--overwrite`; embedded `kind="item"` attachments return `invalid_argument`.
 - **The server generates the quote**: pass only your new text to `message reply` / `reply-all`.
@@ -182,7 +188,7 @@ The old `$HOME/.config/taskseed/ews/profile.toml` is neither read nor migrated a
 
 - macOS only; multiple independent mailbox profiles are supported, but shared mailboxes, impersonation, and a default/current profile are not.
 - No Autodiscover, no custom CA files, no way to skip TLS verification.
-- Not in this first version: deleting, forwarding, drafts, sending attachments, calendar and contacts, MIME `.eml` export.
+- Not in this first version: deleting, forwarding, updating/sending/deleting existing drafts, draft or outgoing attachments, calendar and contacts, MIME `.eml` export.
 - `folder list` returns `well_known_name: null` for folders without an EWS distinguished name (custom folders, or the main-mailbox folder literally named `Archive`); those can only be selected by folder ID.
 
 ## Development
@@ -197,7 +203,7 @@ uv run pytest          # branch coverage is enabled with a 90% floor
 
 - Type checking runs Pyright in **strict** mode; only the exchangelib adapter module suppresses the missing third-party type information locally.
 - Tests use a fake gateway, so they isolate the network and the Keychain and run in ordinary CI.
-- Real EWS acceptance cannot run in CI: it has to be performed manually inside the corporate network with a real mailbox (`doctor` records the server version first, then covers synchronization, pagination, filters, send-and-read-back, mark-read/reply/move and attachment saving).
+- Real EWS acceptance cannot run in CI: it has to be performed manually inside the corporate network with a real mailbox (`doctor` records the server version first, then covers synchronization, pagination, filters, send-and-read-back, all three draft creation modes, mark-read/reply/move and attachment saving).
 
 ## License
 

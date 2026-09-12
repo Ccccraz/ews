@@ -18,7 +18,7 @@ from ews.models.mailbox import (
     Pagination,
     ReadState,
 )
-from ews.models.outgoing import OutgoingMessage, OutgoingReply
+from ews.models.outgoing import DraftMessage, OutgoingMessage, OutgoingReply
 from ews.models.profile import Profile, Profiles
 from ews.models.server import Server
 from ews.models.sync import (
@@ -35,7 +35,12 @@ from ews.models.sync import (
 from ews.models.thread import MessageThreadQuery, MessageThreadResult, ThreadMessage
 from ews.models.tls import TlsCheckResult
 from ews.models.user import User
-from ews.models.write import MessageMoveResult, MessageReadStateResult, MessageSendResult
+from ews.models.write import (
+    MessageDraftResult,
+    MessageMoveResult,
+    MessageReadStateResult,
+    MessageSendResult,
+)
 
 __all__ = [
     "AttachmentMetadata",
@@ -43,6 +48,7 @@ __all__ = [
     "ConnectionTestResult",
     "DoctorCheck",
     "DoctorResult",
+    "DraftMessage",
     "FlagStatus",
     "Folder",
     "FolderListResult",
@@ -55,6 +61,7 @@ __all__ = [
     "MailboxAddress",
     "MessageBody",
     "MessageDetail",
+    "MessageDraftResult",
     "MessageGetResult",
     "MessageListQuery",
     "MessageListResult",

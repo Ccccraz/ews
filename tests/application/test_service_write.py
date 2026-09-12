@@ -16,10 +16,12 @@ from ews.config import PasswordStore, ProfileStore
 from ews.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
+    DraftMessage,
     Folder,
     FolderSyncResult,
     MessageBody,
     MessageDetail,
+    MessageDraftResult,
     MessageMoveResult,
     MessageReadStateResult,
     MessageSendResult,
@@ -38,7 +40,9 @@ class WriteGateway:
 
     def __init__(self) -> None:
         self.sent: list[OutgoingMessage] = []
+        self.drafts: list[DraftMessage] = []
         self.replies: list[tuple[str, OutgoingReply, bool]] = []
+        self.reply_drafts: list[tuple[str, OutgoingReply, bool]] = []
         self.read_states: list[tuple[str, bool]] = []
         self.moves: list[tuple[str, str]] = []
         self.saved: list[tuple[str, str, Path]] = []
@@ -79,6 +83,13 @@ class WriteGateway:
         self.sent.append(message)
         return _send_result(profile, message.subject)
 
+    def save_message_draft(
+        self, profile: Profile, password: SecretStr, message: DraftMessage
+    ) -> MessageDraftResult:
+        assert password.get_secret_value() == "top-secret"
+        self.drafts.append(message)
+        return _draft_result(profile, message.subject)
+
     def reply_message(
         self,
         profile: Profile,
@@ -91,6 +102,19 @@ class WriteGateway:
         assert password.get_secret_value() == "top-secret"
         self.replies.append((message_id, reply, reply_all))
         return _send_result(profile, "RE: Report")
+
+    def save_reply_draft(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        reply: OutgoingReply,
+        *,
+        reply_all: bool,
+    ) -> MessageDraftResult:
+        assert password.get_secret_value() == "top-secret"
+        self.reply_drafts.append((message_id, reply, reply_all))
+        return _draft_result(profile, reply.subject or "RE: Report")
 
     def set_read_state(
         self, profile: Profile, password: SecretStr, message_id: str, *, is_read: bool
@@ -150,6 +174,18 @@ def test_service_sends_a_message_without_a_ready_cache(
     assert result.subject == "Report"
 
 
+def test_service_saves_a_new_draft_without_a_ready_cache(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    gateway = WriteGateway()
+    service = _service(tmp_path, monkeypatch, gateway, ready=False)
+
+    result = service.save_message_draft("DOMAIN\\agent", _draft())
+
+    assert gateway.drafts == [_draft()]
+    assert result.message_id == "draft-id"
+
+
 def test_service_replies_to_a_cached_message(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     gateway = WriteGateway()
     service = _service(tmp_path, monkeypatch, gateway)
@@ -167,6 +203,18 @@ def test_service_reply_all_forwards_the_flag(tmp_path: Path, monkeypatch: Monkey
     service.reply_to_message(MAILBOX, "message-id", _reply(), reply_all=True)
 
     assert gateway.replies[0][2] is True
+
+
+def test_service_saves_a_reply_all_draft_for_a_cached_message(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    gateway = WriteGateway()
+    service = _service(tmp_path, monkeypatch, gateway)
+
+    result = service.save_reply_draft(MAILBOX, "message-id", _reply(), reply_all=True)
+
+    assert gateway.reply_drafts == [("message-id", _reply(), True)]
+    assert result.subject == "RE: Report"
 
 
 def test_service_updates_the_read_state_of_a_cached_message(
@@ -225,6 +273,9 @@ def test_service_requires_a_ready_cache_for_message_writes(
 
     with pytest.raises(MailboxCacheNotReadyError):
         service.reply_to_message(MAILBOX, "message-id", _reply(), reply_all=False)
+
+    with pytest.raises(MailboxCacheNotReadyError):
+        service.save_reply_draft(MAILBOX, "message-id", _reply(), reply_all=False)
 
 
 def test_service_rejects_a_write_for_a_different_user(
@@ -299,6 +350,19 @@ def _send_result(profile: Profile, subject: str) -> MessageSendResult:
     )
 
 
+def _draft_result(profile: Profile, subject: str) -> MessageDraftResult:
+    return MessageDraftResult(
+        user=profile.user.username,
+        message_id="draft-id",
+        change_key="draft-change-1",
+        folder_id="drafts-id",
+        subject=subject,
+        to=[],
+        cc=[],
+        bcc=[],
+    )
+
+
 def _message() -> MessageDetail:
     return MessageDetail.model_validate(
         {
@@ -331,6 +395,15 @@ def _outgoing() -> OutgoingMessage:
     return OutgoingMessage.model_validate(
         {
             "to": ["to@example.com"],
+            "subject": "Report",
+            "body": {"content_type": "text", "content": "Body"},
+        }
+    )
+
+
+def _draft() -> DraftMessage:
+    return DraftMessage.model_validate(
+        {
             "subject": "Report",
             "body": {"content_type": "text", "content": "Body"},
         }

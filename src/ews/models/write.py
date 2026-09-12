@@ -12,6 +12,19 @@ class MessageSendResult(ContractModel):
     bcc: list[MailboxAddress]
 
 
+class MessageDraftResult(ContractModel):
+    """Server-confirmed identifiers and recipients of one saved draft."""
+
+    user: str
+    message_id: str
+    change_key: str
+    folder_id: str
+    subject: str
+    to: list[MailboxAddress]
+    cc: list[MailboxAddress]
+    bcc: list[MailboxAddress]
+
+
 class MessageReadStateResult(ContractModel):
     """Server-confirmed read state of one updated message."""
 

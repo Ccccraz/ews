@@ -18,10 +18,12 @@ from ews.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
     DoctorResult,
+    DraftMessage,
     FolderListResult,
     MailboxSyncResult,
     MessageChangeKind,
     MessageDetail,
+    MessageDraftResult,
     MessageGetResult,
     MessageListQuery,
     MessageListResult,
@@ -250,6 +252,12 @@ class MailboxApplicationService:
         password = self._password_store.get(profile)
         return self._gateway.send_message(profile, password, message)
 
+    def save_message_draft(self, selected_user: str, message: DraftMessage) -> MessageDraftResult:
+        """Save one new draft; the local cache is left for the next synchronization."""
+        profile = self._load_profile(selected_user)
+        password = self._password_store.get(profile)
+        return self._gateway.save_message_draft(profile, password, message)
+
     def reply_to_message(
         self,
         selected_user: str,
@@ -263,6 +271,22 @@ class MailboxApplicationService:
         self._require_cached_message(profile, message_id)
         password = self._password_store.get(profile)
         return self._gateway.reply_message(
+            profile, password, message_id, reply, reply_all=reply_all
+        )
+
+    def save_reply_draft(
+        self,
+        selected_user: str,
+        message_id: str,
+        reply: OutgoingReply,
+        *,
+        reply_all: bool,
+    ) -> MessageDraftResult:
+        """Save a reply draft for one cached message without changing the local cache."""
+        profile = self._load_profile(selected_user)
+        self._require_cached_message(profile, message_id)
+        password = self._password_store.get(profile)
+        return self._gateway.save_reply_draft(
             profile, password, message_id, reply, reply_all=reply_all
         )
 

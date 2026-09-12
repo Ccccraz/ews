@@ -43,7 +43,7 @@ CLI -> Application Service -> MailboxGateway Protocol -> Exchangelib Adapter
 ## 本地缓存
 
 - 远端是唯一事实来源：缓存只存元数据与正文，不存附件内容；读取命令一律只读缓存，未就绪时返回 `cache_not_ready`/4 并提示先 `sync`。
-- `ready` 只在一次完整 `sync` 的结尾写入。缓存文件不存在、schema 处于待重建版本、或该 mailbox 的 ready 状态缺失或为 false 时，读取一律返回 `cache_not_ready`/4。受此门控的是 `folder list`、`message list|get|thread`、`message reply|reply-all|mark-read|move` 和 `attachment save`；`sync`、`test`、`doctor`、`send` 与 `set`/`config`/`auth` 不依赖缓存。
+- `ready` 只在一次完整 `sync` 的结尾写入。缓存文件不存在、schema 处于待重建版本、或该 mailbox 的 ready 状态缺失或为 false 时，读取一律返回 `cache_not_ready`/4。受此门控的是 `folder list`、`message list|get|thread`、`message reply|reply-all|draft reply|draft reply-all|mark-read|move` 和 `attachment save`；`sync`、`test`、`doctor`、`send`、`draft create` 与 `set`/`config`/`auth` 不依赖缓存。
 - 写命令只修改远端、不修改本地缓存：mark-read 与 move 的效果由下一次 `sync` 通过 `READ_FLAG_CHANGE` 与 delete+create 收敛，因此"写后立即读"可能看到写前快照。
 - schema 变更时强制重建（删除受影响的表并清空 item sync state 与 mailbox ready 标记，下一次 `sync` 全量重取），不做 `ALTER TABLE` + 回填：回填需要新增公开命令与额外代码，而全量重取本来就要重新走一遍 GetItem。
 - 会话字段需要 `(mailbox, conversation_id)` 索引，v2 → v3 即按上述规则重建。
@@ -55,7 +55,7 @@ CLI -> Application Service -> MailboxGateway Protocol -> Exchangelib Adapter
 - 条目同步按缓存中的文件夹顺序逐个执行：每个文件夹读自己的 item sync state，再调用 IdOnly `SyncFolderItems`。
 - 只有 `CREATE`/`UPDATE` 的邮件需要再取详情，并按每批最多 10 封 `GetItem`（适配器硬上限）；`READ_FLAG_CHANGE` 直接按同步结果更新 `is_read`，不取详情。
 - 每个 `apply_folder_changes` / `apply_message_changes` 是一个事务，事务内同时写入数据与所在作用域的 sync state；不存在覆盖整个 sync 的大事务。因此 sync 可续跑：中途失败留下的是"一致的前缀状态"，下一次 sync 从已持久化的状态继续。
-- 缓存读取命令（`folder list`、`message list|get|thread`）只读缓存、从不触网；`sync` 是唯一写缓存的命令，`send` 不接触缓存；`attachment save` 仍从缓存校验消息与附件元数据，但内容要经 EWS 下载。
+- 缓存读取命令（`folder list`、`message list|get|thread`）只读缓存、从不触网；`sync` 是唯一写缓存的命令，`send` 与三类草稿命令都不写缓存；`attachment save` 仍从缓存校验消息与附件元数据，但内容要经 EWS 下载。
 - 过期的 sync state 对用户透明自愈：适配器把 EWS 的 `ErrorInvalidSyncStateData` 翻成 `InvalidSyncStateError`，服务层按作用域捕获后从零重来（层级用 `sync_hierarchy(None)`，单个文件夹用 `sync_items(folder, None)`），并让该作用域以 `reset=True` 落地；用户既不会看到错误码，也不需要手动清缓存。
 - `reset=True` 表示把该次 EWS 响应当作该作用域的完整事实：响应中不存在的文件夹行会被删除，并连带删除它的 item sync state 与缓存邮件；某个文件夹中不在响应里的邮件同样会被删除。
 - 缓存是"最新已同步视图"，不是时间点一致的快照：sync 中途失败不会回退 `ready` 标记，此时各文件夹可能处于不同进度，下一次成功 sync 后收敛。这是刻意选择——失败留下的是可续跑的一致前缀，而回退 `ready` 会让一次网络抖动把原本可读的缓存变成不可读。
@@ -83,6 +83,12 @@ ews --user U message reply     <message-id> --body-file <path|-> [--subject <tex
                                  [--content-type text|html]
 ews --user U message reply-all <message-id> --body-file <path|-> [--subject <text>]
                                  [--content-type text|html]
+ews --user U message draft create [--to <addr>...] [--cc <addr>...] [--bcc <addr>...]
+                                 [--subject <text>] --body-file <path|-> [--content-type text|html]
+ews --user U message draft reply <message-id> --body-file <path|-> [--subject <text>]
+                                 [--content-type text|html]
+ews --user U message draft reply-all <message-id> --body-file <path|-> [--subject <text>]
+                                 [--content-type text|html]
 ews --user U message mark-read <message-id> [--unread]
 ews --user U message move      <message-id> --folder <folder-id|well-known-name>
 ews --user U attachment save   <message-id> <attachment-id> --path <file>
@@ -91,7 +97,7 @@ ews --user U attachment save   <message-id> <attachment-id> --path <file>
 - `--user` 是全局选项，使用 NTLM username 或 mailbox 地址选择唯一 profile，匹配时忽略大小写。所有需要邮箱身份的命令都必须提供它；没有默认或当前 profile。
 - `--log-level` 是全局选项，取值 `error`、`warning`、`info` 或 `debug`（大小写不敏感，默认 `warning`），只调整 stderr 诊断的详细程度；`--log-format` 取值 `json`（默认）或 `console`，决定诊断是结构化 JSON 行还是人类可读输出，`console` 只在 stderr 是终端且未设置 `NO_COLOR` 时着色。
 - `--body-file` 只接受显式路径，`-` 表示 stdin（因此该参数启用 `allow_leading_hyphen`）。写命令不回显正文、不输出进度、不做交互确认：调用显式写命令即表示授权执行。
-- 收件人在 CLI 层是 `list[str]`，"至少一个收件人"由模型保证，地址用 `EmailStr(check_deliverability=False)` 校验（不触发 DNS）；这类失败与其他参数错误一样是 JSON + 退出码 2。
+- 收件人在 CLI 层是 `list[str]`，`send` 的“至少一个收件人”由模型保证，`draft create` 则允许三组收件人都为空；已提供的地址都用 `EmailStr(check_deliverability=False)` 校验（不触发 DNS）。这类失败与其他参数错误一样是 JSON + 退出码 2。
 - `--subject` 在 `send` 中默认为空串，在 `reply`/`reply-all` 中省略表示使用标准回复主题；`mark-read` 默认置为已读，`--unread` 置为未读。
 - `set` 与 `auth set-password` 只接受无回显的交互输入（不接受密码参数），密码写入 Keychain；`config list` 返回按 mailbox 排序的全部 profile，`config show` 不显示秘密，`config path` 返回实际配置路径。`config delete` 先删除 Keychain 项再删除 profile，密码缺失视为成功，Keychain 后端失败时保留 profile，且永不删除 SQLite 缓存。`doctor` 做完整诊断并返回 Exchange build/version，`test` 只做一次真实 Inbox 元数据请求。
 
@@ -144,10 +150,11 @@ Exchange 的 conversation 就是这里所说的 thread：`ConversationId` 是会
 ## 写入行为
 
 - `message send` 用 `Message(...).send(save_copy=True)`，Sent 副本由 EWS 写入 Sent Items；`reply`/`reply-all` 用 exchangelib 的 `create_reply`/`create_reply_all` 加 `send(save_copy=True)`。
+- `message draft create` 用 `Message(folder=account.drafts, ...).save()`；`draft reply`/`draft reply-all` 用 `create_reply`/`create_reply_all` 加 `save(account.drafts)`。草稿路径不调用 `send()`，并返回 SaveOnly 响应中的 message ID 与 change key。
 - 省略 `--subject` 时由适配器计算标准回复主题：原主题为空则留空，已以 `RE:` 开头（忽略大小写）则保持原样，否则加 `RE: ` 前缀。该计算不依赖服务器默认行为，因此可确定性测试。
-- `MailboxGateway` 提供 `send_message`、`reply_message`、`set_read_state`、`move_message` 四个写方法，`EwsClient` 是唯一实现。写操作在适配器内先按 `ItemId(id=...)` 取一次服务端最新状态再变更（exchangelib 的 id 转换只接受 `ItemId` 或 `(id, changekey)` 元组，裸字符串不可用）。
+- `MailboxGateway` 为发送、保存新草稿、回复、保存回复草稿、设置已读状态和移动分别提供严格类型方法，`EwsClient` 是唯一实现。涉及已有邮件的写操作在适配器内先按 `ItemId(id=...)` 取一次服务端最新状态再变更（exchangelib 的 id 转换只接受 `ItemId` 或 `(id, changekey)` 元组，裸字符串不可用）。
 - 读/同步路径的异常翻译 `_run` 与写路径的 `_run_write` 分开，两者共用 `_with_account` 连接构造。
-- `send` 不接触缓存；`reply`/`reply-all`/`mark-read`/`move` 要求缓存 ready 且目标消息存在（与 `message get` 一致），`move` 的目标文件夹也从缓存解析。
+- `send` 与 `draft create` 不接触缓存；`reply`/`reply-all`/`draft reply`/`draft reply-all`/`mark-read`/`move` 要求缓存 ready 且目标消息存在（与 `message get` 一致），`move` 的目标文件夹也从缓存解析。所有草稿写入只修改远端，下一次 `sync` 后本地读取才可见。
 - 响应只报告 EWS 确认的事实，不虚构服务器未返回的 message ID：`send`/`reply` 只返回收件人与主题（SendAndSaveCopy 模式下 EWS 不返回 ItemId），`mark-read` 返回更新后的 change key（EWS 在 UpdateItem 响应中不为消息更新回传可用的 change key，因此该值由一次按 `is_read` 的 GetItem 读回，而不是取本地对象上的值），`move` 返回目标文件夹内的新 ID 与 change key。
 - `mark-read` 与 `move` 每次只处理一封邮件，避免批处理中的部分成功语义。
 
@@ -167,13 +174,13 @@ Exchange 的 conversation 就是这里所说的 thread：`ConversationId` 是会
 
 ## 兼容性与验收
 
-- 真实 EWS 验收无法在普通 CI 中运行，必须在企业网络内用真实邮箱手工执行：先用 `doctor` 记录 Exchange build/version 并验证 TLS、Keychain 和 NTLM，再验证文件夹遍历、分页与全部过滤器，然后发送唯一主题邮件并验证 list/get/正文/Internet headers，用预置带附件邮件验证元数据与文件保存，最后验证 mark-read、reply、reply-all 和 move。
+- 真实 EWS 验收无法在普通 CI 中运行，必须在企业网络内用真实邮箱手工执行：先用 `doctor` 记录 Exchange build/version 并验证 TLS、Keychain 和 NTLM，再验证文件夹遍历、分页与全部过滤器，然后发送唯一主题邮件并验证 list/get/正文/Internet headers；分别保存新邮件、reply 与 reply-all 草稿，确认 Drafts 中存在且没有发信，再执行 `sync` 验证 `is_draft=true`；用预置带附件邮件验证元数据与文件保存，最后验证 mark-read、reply、reply-all 和 move。
 - 验收中的测试数据一律由人工清理：CLI 不暴露删除能力，验收本身也只使用 `move` 复原，不执行任何删除。
 - 兼容基线：`Microsoft Exchange Server 2019`（`Build=15.2.2562.46, API=Exchange2016`）于 2026-09-12 完整通过上述步骤；其他服务器版本在重复该验收前不做兼容性声明。
 
 ## 当前范围之外
 
-- 邮件删除、转发和草稿管理；发送附件或以"新邮件"方式实现带附件的回复；附件上传。
+- 邮件删除、转发，以及修改、发送或删除已有草稿；发送附件或草稿附件；以"新邮件"方式实现带附件的回复；附件上传。
 - 日历和联系人；MIME `.eml` 导出（含内嵌邮件附件的导出）。
 - 共享邮箱和 impersonation；默认/当前 profile；Autodiscover；OAuth、Kerberos/GSSAPI 和 Basic Auth。
 - 自定义 CA、禁用 TLS 校验；无桌面 Linux 与 Windows 客户端。

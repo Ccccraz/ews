@@ -6,6 +6,8 @@ from cyclopts import Parameter
 
 from ews.commands.context import CommandContext, fail, run_write
 from ews.models import (
+    DraftMessage,
+    MessageDraftResult,
     MessageSendResult,
     OutgoingMessage,
     OutgoingReply,
@@ -47,6 +49,37 @@ def send_message(
     return run_write(context, operation)
 
 
+def create_draft(
+    *,
+    body_file: BodyFile,
+    to: list[str] | None = None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    subject: str = "",
+    content_type: ContentType = "text",
+    context: ContextArgument,
+) -> int:
+    """Save a new message in Drafts without sending it."""
+    try:
+        body = _read_body(body_file)
+    except (OSError, UnicodeDecodeError) as error:
+        return fail("invalid_argument", f"Unable to read body file: {error}", 2)
+
+    def operation(user: str) -> MessageDraftResult:
+        message = DraftMessage.model_validate(
+            {
+                "to": to or [],
+                "cc": cc or [],
+                "bcc": bcc or [],
+                "subject": subject,
+                "body": {"content_type": content_type, "content": body},
+            }
+        )
+        return context.service.save_message_draft(user, message)
+
+    return run_write(context, operation)
+
+
 def reply_to_message(
     message_id: str,
     *,
@@ -69,6 +102,25 @@ def reply_to_message(
     return run_write(context, operation)
 
 
+def create_reply_draft(
+    message_id: str,
+    *,
+    body_file: BodyFile,
+    subject: str | None = None,
+    content_type: ContentType = "text",
+    context: ContextArgument,
+) -> int:
+    """Save a reply to one message in Drafts without sending it."""
+    return _create_reply_draft(
+        message_id,
+        body_file=body_file,
+        subject=subject,
+        content_type=content_type,
+        reply_all=False,
+        context=context,
+    )
+
+
 def reply_all_to_message(
     message_id: str,
     *,
@@ -89,6 +141,25 @@ def reply_all_to_message(
         )
 
     return run_write(context, operation)
+
+
+def create_reply_all_draft(
+    message_id: str,
+    *,
+    body_file: BodyFile,
+    subject: str | None = None,
+    content_type: ContentType = "text",
+    context: ContextArgument,
+) -> int:
+    """Save a reply-all to one message in Drafts without sending it."""
+    return _create_reply_draft(
+        message_id,
+        body_file=body_file,
+        subject=subject,
+        content_type=content_type,
+        reply_all=True,
+        context=context,
+    )
 
 
 def mark_read(
@@ -120,6 +191,31 @@ def _reply(body: str, subject: str | None, content_type: ContentType) -> Outgoin
             "subject": subject,
             "body": {"content_type": content_type, "content": body},
         }
+    )
+
+
+def _create_reply_draft(
+    message_id: str,
+    *,
+    body_file: str,
+    subject: str | None,
+    content_type: ContentType,
+    reply_all: bool,
+    context: CommandContext,
+) -> int:
+    try:
+        body = _read_body(body_file)
+    except (OSError, UnicodeDecodeError) as error:
+        return fail("invalid_argument", f"Unable to read body file: {error}", 2)
+
+    return run_write(
+        context,
+        lambda user: context.service.save_reply_draft(
+            user,
+            message_id,
+            _reply(body, subject, content_type),
+            reply_all=reply_all,
+        ),
     )
 
 
