@@ -6,8 +6,8 @@ import pytest
 import truststore
 from pytest import MonkeyPatch
 
-from ews.models import Profile, TlsCheckResult
-from ews.system import SystemTlsProbe, TlsProbeError
+from ews_cli.models import Profile, TlsCheckResult
+from ews_cli.system import SystemTlsProbe, TlsProbeError
 
 CERTIFICATE: dict[str, object] = {
     "subject": (

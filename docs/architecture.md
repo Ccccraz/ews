@@ -35,9 +35,9 @@ CLI -> Application Service -> MailboxGateway Protocol -> Exchangelib Adapter
 - 使用 exchangelib，不自行维护 EWS SOAP、WSDL 或 XML 映射；目标是本地 Exchange，使用 NTLM 与 HTTPS（[Microsoft 的认证说明](https://learn.microsoft.com/en-us/exchange/client-developer/exchange-web-services/authentication-and-ews-in-exchange)）。
 - 使用显式 EWS endpoint 并关闭 Autodiscover；每个 profile 只对应一个邮箱，使用 delegate access，不支持共享邮箱或 impersonation。
 - TLS 必须启用证书校验，并通过 Truststore 使用**操作系统信任库**（macOS Keychain、Windows 证书库、Linux OpenSSL 系统 CA）；Linux 需要 OpenSSL 3.0.3+ 且系统安装了 `ca-certificates`。不支持自定义 CA 或跳过校验。
-- 非敏感配置（endpoint、mailbox SMTP address、NTLM username）使用 TOML 存放在 `$HOME/.config/taskseed/ews/profiles.toml` 的 `[[profiles]]` 数组中，标准库 `tomllib` 读取、Tomli-W 写入，并通过同目录临时文件原子替换。`$HOME` 即 Python `Path.home()`，三平台路径规则统一（Windows 为 `%USERPROFILE%`），不按 OS 分支。mailbox、username 及交叉别名忽略大小写后唯一；mailbox 是新增或更新时的稳定身份。
-- 密码存**系统 keyring**（`keyring` 可移植 API；service 为 `taskseed.ews:<endpoint-host>`，account 为 NTLM username）：macOS 用 Keychain、Windows 用 Credential Manager、Linux 用桌面 Secret Service（D-Bus，如 GNOME Keyring/KWallet）。应用内使用 Pydantic `SecretStr`；密码不得出现在 TOML、命令行参数、stdout、stderr 或日志中。
-- 旧 `profile.toml` 不读取也不自动迁移。升级时对每个账户重新执行 `ews set`，或手工把旧 `[server]`/`[user]` 包装为 `profiles.toml` 中的 `[[profiles]]`、`[profiles.server]`/`[profiles.user]`。keyring 键格式不变。
+- 非敏感配置（endpoint、mailbox SMTP address、NTLM username）使用 TOML 存放在 `$HOME/.config/taskseed/ews-cli/profiles.toml` 的 `[[profiles]]` 数组中，标准库 `tomllib` 读取、Tomli-W 写入，并通过同目录临时文件原子替换。`$HOME` 即 Python `Path.home()`，三平台路径规则统一（Windows 为 `%USERPROFILE%`），不按 OS 分支。mailbox、username 及交叉别名忽略大小写后唯一；mailbox 是新增或更新时的稳定身份。
+- 密码存**系统 keyring**（`keyring` 可移植 API；service 为 `taskseed.ews-cli:<endpoint-host>`，account 为 NTLM username）：macOS 用 Keychain、Windows 用 Credential Manager、Linux 用桌面 Secret Service（D-Bus，如 GNOME Keyring/KWallet）。应用内使用 Pydantic `SecretStr`；密码不得出现在 TOML、命令行参数、stdout、stderr 或日志中。
+- 旧命名空间（`$HOME/.config/taskseed/ews/profile.toml`、目录 `.../taskseed/ews/`、keyring service `taskseed.ews:<endpoint-host>`）不读取也不自动迁移。升级时对每个账户重新执行 `ews-cli set`，写入新位置 `.../taskseed/ews-cli/profiles.toml` 与 `taskseed.ews-cli:<endpoint-host>`；或手工把旧 `[server]`/`[user]` 包装为 `profiles.toml` 中的 `[[profiles]]`、`[profiles.server]`/`[profiles.user]`。旧密码不迁移。
 - 平台支持：macOS 已完成真实 EWS 验收；Windows 与 Linux 已实现但未做真实 EWS 验收。Linux 仅支持**桌面**会话（需要运行中的 Secret Service），不支持无桌面/SSH/容器。三平台都不支持环境变量密码回退和文件型 keyring。
 
 ## 本地缓存
@@ -68,36 +68,36 @@ CLI -> Application Service -> MailboxGateway Protocol -> Exchangelib Adapter
 ### 命令与全局选项
 
 ```text
-ews set
-ews config list|path
-ews --user U config show|delete
-ews --user U auth set-password|status|delete-password
-ews --user U doctor|test
-ews --user U sync [--progress]
-ews --user U folder list
-ews --user U contact list [--folder F] [--search T] [--offset N] [--limit N]
-ews --user U contact get  <contact-id>
-ews --user U contact search <query> [--limit N]
-ews --user U message list [--folder F] [--read-state S] [--sender A] [--subject-contains T]
+ews-cli set
+ews-cli config list|path
+ews-cli --user U config show|delete
+ews-cli --user U auth set-password|status|delete-password
+ews-cli --user U doctor|test
+ews-cli --user U sync [--progress]
+ews-cli --user U folder list
+ews-cli --user U contact list [--folder F] [--search T] [--offset N] [--limit N]
+ews-cli --user U contact get  <contact-id>
+ews-cli --user U contact search <query> [--limit N]
+ews-cli --user U message list [--folder F] [--read-state S] [--sender A] [--subject-contains T]
                             [--body-contains T] [--received-from D] [--received-before D]
                             [--limit N] [--offset N]
-ews --user U message get    <message-id>
-ews --user U message thread <message-id> [--limit N] [--offset N]
-ews --user U message send      --to <addr>... [--cc <addr>...] [--bcc <addr>...]
+ews-cli --user U message get    <message-id>
+ews-cli --user U message thread <message-id> [--limit N] [--offset N]
+ews-cli --user U message send      --to <addr>... [--cc <addr>...] [--bcc <addr>...]
                                  [--subject <text>] --body-file <path|-> [--content-type text|html]
-ews --user U message reply     <message-id> --body-file <path|-> [--subject <text>]
+ews-cli --user U message reply     <message-id> --body-file <path|-> [--subject <text>]
                                  [--content-type text|html]
-ews --user U message reply-all <message-id> --body-file <path|-> [--subject <text>]
+ews-cli --user U message reply-all <message-id> --body-file <path|-> [--subject <text>]
                                  [--content-type text|html]
-ews --user U message draft create [--to <addr>...] [--cc <addr>...] [--bcc <addr>...]
+ews-cli --user U message draft create [--to <addr>...] [--cc <addr>...] [--bcc <addr>...]
                                  [--subject <text>] --body-file <path|-> [--content-type text|html]
-ews --user U message draft reply <message-id> --body-file <path|-> [--subject <text>]
+ews-cli --user U message draft reply <message-id> --body-file <path|-> [--subject <text>]
                                  [--content-type text|html]
-ews --user U message draft reply-all <message-id> --body-file <path|-> [--subject <text>]
+ews-cli --user U message draft reply-all <message-id> --body-file <path|-> [--subject <text>]
                                  [--content-type text|html]
-ews --user U message mark-read <message-id> [--unread]
-ews --user U message move      <message-id> --folder <folder-id|well-known-name>
-ews --user U attachment save   <message-id> <attachment-id> --path <file>
+ews-cli --user U message mark-read <message-id> [--unread]
+ews-cli --user U message move      <message-id> --folder <folder-id|well-known-name>
+ews-cli --user U attachment save   <message-id> <attachment-id> --path <file>
 ```
 
 - `--user` 是全局选项，使用 NTLM username 或 mailbox 地址选择唯一 profile，匹配时忽略大小写。所有需要邮箱身份的命令都必须提供它；没有默认或当前 profile。
@@ -196,7 +196,7 @@ Exchange 的 conversation 就是这里所说的 thread：`ConversationId` 是会
 
 ## 发布与版本
 
-- 发行名（PyPI distribution）为 `taskseed-ews`，导入包名与命令名仍为 `ews`；`uv_build` 通过 `[tool.uv.build-backend] module-name = "ews"` 显式指定导入包，使发行名与包名解耦。运行时版本经 `importlib.metadata.version("taskseed-ews")` 读取。
+- 发行名（PyPI distribution）为 `taskseed-ews`，而导入包名与命令名分别为 `ews_cli` 和 `ews-cli`；`uv_build` 通过 `[tool.uv.build-backend] module-name = "ews_cli"` 显式指定导入包，使发行名与包名解耦。运行时版本经 `importlib.metadata.version("taskseed-ews")` 读取。
 - 版本号、`CHANGELOG.md` 与 GitHub Release 由 release-please 管理：`main` 上的 conventional commits 驱动 release PR，合并后自动打 `vX.Y.Z` tag 并创建 Release。0.x 阶段启用 `bump-minor-pre-major` 与 `bump-patch-for-minor-pre-major`，`feat`/`fix` 只升 patch。
 - 发布与 release-please 在同一个 workflow（`.github/workflows/publish.yml`）：`release-please` job 输出 `release_created`，`pypi` job 据此用 `uv build` + `uv publish` 经 PyPI Trusted Publishing（environment `pypi`，`id-token: write`）发布，不保存任何 token。放在同一 workflow 是为了绕开 `GITHUB_TOKEN` 不触发其它 workflow 的限制。
 - `uv.lock` 中的自身版本不随发布同步（release-please 只改 `pyproject.toml` 与 `CHANGELOG.md`），不影响依赖解析；因此常规 CI 使用 `uv sync` 而不加 `--locked`。CI 在普通 PR 与 `main` 上运行 Ruff、Pyright 与 pytest，release PR 不触发 CI。

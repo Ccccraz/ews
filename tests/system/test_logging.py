@@ -7,7 +7,7 @@ import structlog
 from pydantic import JsonValue, SecretStr
 from pytest import CaptureFixture
 
-from ews.system.logging import LogFormat, LogLevel, configure_logging
+from ews_cli.system.logging import LogFormat, LogLevel, configure_logging
 
 
 def _events(stderr: str) -> list[dict[str, JsonValue]]:
@@ -17,21 +17,21 @@ def _events(stderr: str) -> list[dict[str, JsonValue]]:
 def test_diagnostics_are_structured_json_on_stderr(capsys: CaptureFixture[str]) -> None:
     configure_logging(LogLevel.INFO)
 
-    structlog.get_logger("ews.demo").info("cache rebuilt", messages=15)
+    structlog.get_logger("ews_cli.demo").info("cache rebuilt", messages=15)
 
     captured = capsys.readouterr()
     assert captured.out == ""
     (event,) = _events(captured.err)
     assert event["event"] == "cache rebuilt"
     assert event["level"] == "info"
-    assert event["logger"] == "ews.demo"
+    assert event["logger"] == "ews_cli.demo"
     assert event["messages"] == 15
     assert "timestamp" in event
 
 
 def test_level_filters_lower_severity_records(capsys: CaptureFixture[str]) -> None:
     configure_logging(LogLevel.WARNING)
-    log = structlog.get_logger("ews.demo")
+    log = structlog.get_logger("ews_cli.demo")
 
     log.info("quiet")
     log.warning("loud")
@@ -43,7 +43,7 @@ def test_level_filters_lower_severity_records(capsys: CaptureFixture[str]) -> No
 def test_console_format_is_an_explicit_opt_in(capsys: CaptureFixture[str]) -> None:
     configure_logging(LogLevel.INFO, LogFormat.CONSOLE)
 
-    structlog.get_logger("ews.demo").info("cache rebuilt")
+    structlog.get_logger("ews_cli.demo").info("cache rebuilt")
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -92,7 +92,7 @@ def test_configuring_twice_keeps_a_single_handler(capsys: CaptureFixture[str]) -
     configure_logging(LogLevel.INFO)
     configure_logging(LogLevel.INFO)
 
-    structlog.get_logger("ews.demo").info("single line")
+    structlog.get_logger("ews_cli.demo").info("single line")
 
     captured = capsys.readouterr()
     assert captured.err.count("single line") == 1
@@ -101,7 +101,9 @@ def test_configuring_twice_keeps_a_single_handler(capsys: CaptureFixture[str]) -
 def test_secret_values_are_masked(capsys: CaptureFixture[str]) -> None:
     configure_logging(LogLevel.DEBUG)
 
-    structlog.get_logger("ews.demo").debug("authenticating with %s", SecretStr("ntlm-secret-value"))
+    structlog.get_logger("ews_cli.demo").debug(
+        "authenticating with %s", SecretStr("ntlm-secret-value")
+    )
 
     captured = capsys.readouterr()
     assert "ntlm-secret-value" not in captured.err
@@ -122,7 +124,7 @@ def test_tracebacks_never_dump_local_variables(
     try:
         authenticate()
     except RuntimeError:
-        structlog.get_logger("ews.demo").exception("authentication failed")
+        structlog.get_logger("ews_cli.demo").exception("authentication failed")
 
     captured = capsys.readouterr()
     assert "ntlm-secret-value" not in captured.err

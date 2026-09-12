@@ -8,17 +8,17 @@ import pytest
 from pydantic import JsonValue, SecretStr
 from pytest import CaptureFixture, MonkeyPatch
 
-from ews.application import MailboxApplicationService
-from ews.cli import app
-from ews.commands.context import CommandContext
-from ews.config import PasswordStore, ProfileStore
-from ews.exchange import (
+from ews_cli.application import MailboxApplicationService
+from ews_cli.cli import app
+from ews_cli.commands.context import CommandContext
+from ews_cli.config import PasswordStore, ProfileStore
+from ews_cli.exchange import (
     EwsAuthenticationError,
     EwsNotFoundError,
     EwsRejectedError,
     EwsServiceError,
 )
-from ews.models import (
+from ews_cli.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
     Contact,
@@ -39,7 +39,7 @@ from ews.models import (
     OutgoingReply,
     Profile,
 )
-from ews.storage import SqliteMailboxStore
+from ews_cli.storage import SqliteMailboxStore
 
 MAILBOX = "agent@example.com"
 
@@ -677,7 +677,7 @@ def test_write_commands_require_a_ready_cache(
 
     assert exit_code == 4
     assert _error(output)["code"] == "cache_not_ready"
-    assert "ews --user agent@example.com sync" in str(_error(output)["message"])
+    assert "ews-cli --user agent@example.com sync" in str(_error(output)["message"])
 
 
 def test_write_commands_reject_a_different_user(
@@ -712,7 +712,7 @@ def test_write_commands_handle_a_missing_profile(
 ) -> None:
     gateway = WriteGateway()
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr("ews.cli.EwsClient", lambda: gateway)
+    monkeypatch.setattr("ews_cli.cli.EwsClient", lambda: gateway)
 
     exit_code, output = _invoke(["--user", MAILBOX, "message", "mark-read", "message-id"], capsys)
 
@@ -787,7 +787,7 @@ def _configure_context(
         service = MailboxApplicationService(profile_store, PasswordStore(), gateway, store)
         return CommandContext(user=user, service=service)
 
-    monkeypatch.setattr("ews.cli._build_context", build_context)
+    monkeypatch.setattr("ews_cli.cli._build_context", build_context)
 
 
 class _Stdin:

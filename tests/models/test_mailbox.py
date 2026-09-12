@@ -6,7 +6,7 @@ import pytest
 from exchangelib import EWSDateTime, EWSTimeZone
 from pydantic import ValidationError
 
-from ews.models import MessageListQuery, MessageSummary, ReadState
+from ews_cli.models import MessageListQuery, MessageSummary, ReadState
 
 
 def test_message_list_query_parses_filters_and_boundaries() -> None:

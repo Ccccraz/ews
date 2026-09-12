@@ -1,4 +1,4 @@
-# ews
+# ews-cli
 
 [中文](README.md) | [English](README.en.md)
 
@@ -10,6 +10,33 @@ This project puts agent tooling on top of a local Exchange mailbox. It does one 
 - **Local-first reads**: `sync` mirrors the mailbox into a local SQLite cache, and every read command only reads that cache, so reads do not depend on a stable network.
 - **Explicit, limited writes**: send, save drafts, reply, mark read, move and download attachments — and **no ability to delete messages or folders**.
 - **Credential safety**: the password lives only in the system keyring and never reaches configuration files, command-line arguments, output or logs.
+
+## Getting Started
+
+For first-time human users, three steps to connect a mailbox:
+
+```nu
+# 1. Install (see Installation below)
+uv tool install taskseed-ews
+
+# 2. Write the non-sensitive configuration interactively; the password is read
+#    without echo and stored in the system keyring
+ews-cli set
+
+# 3. Verify configuration, system keyring, system TLS and NTLM login, and
+#    return the server version
+ews-cli --user <mailbox-or-username> test
+```
+
+`ews-cli set` prompts for the EWS endpoint (HTTPS), the mailbox SMTP address, the NTLM username and the password. Everything except the password is written to `$HOME/.config/taskseed/ews-cli/profiles.toml`; the password lives only in the system keyring and never reaches configuration files, command-line arguments, output or logs.
+
+Multiple profiles are supported; pick one with the global `--user` option (accepts a mailbox or an NTLM username, case-insensitive). Once verification passes, run the first sync to start reading:
+
+```nu
+ews-cli --user <mailbox-or-username> sync
+```
+
+See [Configuration and credentials](#configuration-and-credentials) for setup details and [Quick start](#quick-start) for everyday usage.
 
 ## Capabilities
 
@@ -41,16 +68,16 @@ uv tool install taskseed-ews
 You can also pin to a release tag (replace `vX.Y.Z` with a real version):
 
 ```nu
-uv tool install git+https://github.com/Ccccraz/ews@vX.Y.Z
+uv tool install git+https://github.com/Ccccraz/ews-cli@vX.Y.Z
 ```
 
 Or work from a source checkout (development, or to change the code):
 
 ```nu
-git clone https://github.com/Ccccraz/ews
-cd ews
+git clone https://github.com/Ccccraz/ews-cli
+cd ews-cli
 uv sync
-uv run ews --help
+uv run ews-cli --help
 ```
 
 ## Quick start
@@ -58,32 +85,32 @@ uv run ews --help
 ```nu
 # 1. Interactively store the non-secret configuration; the password is read
 #    without echo and written to the system keyring.
-ews set
+ews-cli set
 
 # 2. Verify configuration, system keyring, system TLS and NTLM login, and report the
 #    server version.
-ews --user agent test
+ews-cli --user agent test
 
 # 3. First synchronization (full; a few thousand messages take 1-2 minutes).
 #    Every later run is incremental.
-ews --user agent sync
+ews-cli --user agent sync
 
 # 4. Inspect the folder tree: both folder IDs and well-known names select a folder.
-ews --user agent folder list
+ews-cli --user agent folder list
 
 # 5. Read mail: structured filters plus pagination.
-ews --user agent message list --read-state unread --limit 20
-ews --user agent message get <message-id>
+ews-cli --user agent message list --read-state unread --limit 20
+ews-cli --user agent message get <message-id>
 
 # 6. Read a whole conversation (across folders, oldest first, bodies included)
 #    to understand the context.
-ews --user agent message thread <message-id>
+ews-cli --user agent message thread <message-id>
 
 # 7. Reply: provide only the text you want to add, the server generates the quote.
-"Thanks, will follow up tomorrow." | ews --user agent message reply-all <message-id> --body-file -
+"Thanks, will follow up tomorrow." | ews-cli --user agent message reply-all <message-id> --body-file -
 
 # 8. Save a reply draft for human review without sending it.
-"Draft response" | ews --user agent message draft reply <message-id> --body-file -
+"Draft response" | ews-cli --user agent message draft reply <message-id> --body-file -
 ```
 
 `--user` is a global option and accepts either the NTLM username or the mailbox address (case-insensitive).
@@ -131,7 +158,7 @@ Success and failure share one versioned envelope, and stdout always carries a si
 ```
 
 ```json
-{"schema_version":1,"ok":false,"error":{"code":"cache_not_ready","message":"Mailbox cache is not ready; run ews --user agent@example.com sync","details":{},"retryable":false}}
+{"schema_version":1,"ok":false,"error":{"code":"cache_not_ready","message":"Mailbox cache is not ready; run ews-cli --user agent@example.com sync","details":{},"retryable":false}}
 ```
 
 Exit codes:
@@ -154,7 +181,7 @@ Diagnostics and logging:
 
 ## Configuration and credentials
 
-The non-secret configuration is TOML, fixed at `$HOME/.config/taskseed/ews/profiles.toml` (where `$HOME` is Python's `Path.home()`, so the path is uniform across platforms).
+The non-secret configuration is TOML, fixed at `$HOME/.config/taskseed/ews-cli/profiles.toml` (where `$HOME` is Python's `Path.home()`, so the path is uniform across platforms).
 Each `[[profiles]]` entry is one profile. Mailboxes and NTLM usernames are aliases that
 must be unique when compared case-insensitively:
 
@@ -176,13 +203,13 @@ mailbox = "operator@example.com"
 username = "operator"
 ```
 
-The password is stored separately in the system keyring: service `taskseed.ews:<endpoint-host>`, account = NTLM username. The password must **never** appear in the TOML file, command-line arguments, stdout, stderr or logs, and `config show` never reveals secrets. `config delete` deletes the selected keyring password before deleting the profile; an already absent password is successful, while a keyring backend failure preserves the profile. SQLite mailbox caches are always retained.
+The password is stored separately in the system keyring: service `taskseed.ews-cli:<endpoint-host>`, account = NTLM username. The password must **never** appear in the TOML file, command-line arguments, stdout, stderr or logs, and `config show` never reveals secrets. `config delete` deletes the selected keyring password before deleting the profile; an already absent password is successful, while a keyring backend failure preserves the profile. SQLite mailbox caches are always retained.
 
-The old `$HOME/.config/taskseed/ews/profile.toml` is neither read nor migrated automatically. To upgrade, run `ews set` again for every account, or create `profiles.toml` manually: add `[[profiles]]` and rename the old `[server]` and `[user]` tables to `[profiles.server]` and `[profiles.user]`. The keyring key format is unchanged, so passwords need not be saved again unless the endpoint host or NTLM username also changes.
+The old namespace (the single-profile `$HOME/.config/taskseed/ews/profile.toml`, the config directory `$HOME/.config/taskseed/ews/`, and the keyring service `taskseed.ews:<endpoint-host>`) is neither read nor migrated automatically. To upgrade, run `ews-cli set` again for every account to write the new location `$HOME/.config/taskseed/ews-cli/profiles.toml` and the new keyring service `taskseed.ews-cli:<endpoint-host>`; or create `profiles.toml` manually by adding `[[profiles]]` and renaming the old `[server]` and `[user]` tables to `[profiles.server]` and `[profiles.user]`. Old passwords are not migrated and must be entered again.
 
 ## Local cache and synchronization
 
-- The cache is the SQLite file `$HOME/.config/taskseed/ews/cache.db`. It stores message metadata and bodies plus the common fields of personal contacts, never attachment content or contact photos.
+- The cache is the SQLite file `$HOME/.config/taskseed/ews-cli/cache.db`. It stores message metadata and bodies plus the common fields of personal contacts, never attachment content or contact photos.
 - Read commands **only read the cache**. Until one complete `sync` has finished the cache is unreadable, and reads answer `cache_not_ready`/4 with a hint to run `sync` first; this includes `contact list|get`. `contact search` is the exception: it queries the live corporate directory and neither reads nor writes the cache.
 - `sync` synchronizes mail folders and personal contact folders (`IPF.Contact`) into the same cache and shares one `ready` flag.
 - Write commands **change the remote mailbox only, never the cache**: the effects of `mark-read` and `move` converge on the next `sync`, so reading immediately after a write can still show the pre-write snapshot.

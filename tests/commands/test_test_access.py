@@ -8,10 +8,10 @@ from keyring.errors import KeyringError
 from pydantic import JsonValue, SecretStr
 from pytest import CaptureFixture, MonkeyPatch
 
-from ews.cli import app
-from ews.config import ProfileStore
-from ews.exchange import EwsAuthenticationError, EwsServiceError
-from ews.models import ConnectionTestResult, Profile
+from ews_cli.cli import app
+from ews_cli.config import ProfileStore
+from ews_cli.exchange import EwsAuthenticationError, EwsServiceError
+from ews_cli.models import ConnectionTestResult, Profile
 
 
 class SuccessfulClient:
@@ -180,7 +180,7 @@ def _error(output: dict[str, JsonValue]) -> dict[str, JsonValue]:
 
 
 def _set_client(monkeypatch: MonkeyPatch, client_type: type[object]) -> None:
-    monkeypatch.setattr("ews.cli.EwsClient", client_type)
+    monkeypatch.setattr("ews_cli.cli.EwsClient", client_type)
 
 
 def _failing_password_read(service: str, username: str) -> str | None:

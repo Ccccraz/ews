@@ -12,14 +12,14 @@ from keyring.errors import (
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
-from ews.config import (
+from ews_cli.config import (
     PasswordBackendUnavailableError,
     PasswordNotFoundError,
     PasswordStore,
     PasswordStoreError,
     PasswordStoreLockedError,
 )
-from ews.models import Profile
+from ews_cli.models import Profile
 
 PROFILE_DATA = {
     "server": {"endpoint": "https://MAIL.example.com/EWS/Exchange.asmx"},
@@ -93,7 +93,7 @@ def test_password_round_trip_uses_profile_identity(
     store.set(profile, SecretStr("top-secret"))
 
     assert fake_keyring.passwords == {
-        ("taskseed.ews:mail.example.com", "DOMAIN\\agent"): "top-secret"
+        ("taskseed.ews-cli:mail.example.com", "DOMAIN\\agent"): "top-secret"
     }
     password = store.get(profile)
     assert password.get_secret_value() == "top-secret"

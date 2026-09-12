@@ -8,11 +8,11 @@ import pytest
 from pydantic import JsonValue
 from pytest import CaptureFixture, MonkeyPatch
 
-from ews import __version__
-from ews.application import MailboxApplicationService
-from ews.cli import app, main
-from ews.commands.context import CommandContext
-from ews.models import FolderListResult
+from ews_cli import __version__
+from ews_cli.application import MailboxApplicationService
+from ews_cli.cli import app, main
+from ews_cli.commands.context import CommandContext
+from ews_cli.models import FolderListResult
 
 
 class StubService:
@@ -55,10 +55,10 @@ def test_version(capsys: CaptureFixture[str]) -> None:
 
 
 def test_module_entrypoint(capsys: CaptureFixture[str], monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["ews", "--version"])
+    monkeypatch.setattr(sys, "argv", ["ews-cli", "--version"])
 
     with pytest.raises(SystemExit) as exit_info:
-        runpy.run_module("ews", run_name="__main__")
+        runpy.run_module("ews_cli", run_name="__main__")
 
     captured = capsys.readouterr()
     assert exit_info.value.code == 0
@@ -80,7 +80,7 @@ def _use_stub_service(monkeypatch: MonkeyPatch, service: object | None = None) -
         chosen = StubService() if service is None else service
         return CommandContext(user=user, service=cast(MailboxApplicationService, chosen))
 
-    monkeypatch.setattr("ews.cli._build_context", build_context)
+    monkeypatch.setattr("ews_cli.cli._build_context", build_context)
 
 
 def test_log_level_selects_the_stderr_diagnostic_level(
@@ -189,7 +189,7 @@ def test_unexpected_context_errors_return_the_internal_error_envelope(
         del user
         raise KeyError("profile store")
 
-    monkeypatch.setattr("ews.cli._build_context", build_context)
+    monkeypatch.setattr("ews_cli.cli._build_context", build_context)
 
     with pytest.raises(SystemExit) as exit_info:
         app(["--user", "AGENT@EXAMPLE.COM", "folder", "list"])

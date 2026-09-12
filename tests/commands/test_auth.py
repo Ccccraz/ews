@@ -10,9 +10,9 @@ from keyring.errors import KeyringError, PasswordDeleteError
 from pydantic import JsonValue
 from pytest import CaptureFixture, MonkeyPatch
 
-from ews.cli import app
-from ews.config import ProfileStore
-from ews.models import Profile
+from ews_cli.cli import app
+from ews_cli.config import ProfileStore
+from ews_cli.models import Profile
 
 
 def test_auth_set_password_updates_system_keyring(
@@ -36,7 +36,7 @@ def test_auth_set_password_updates_system_keyring(
         "ok": True,
         "data": {"username": "DOMAIN\\agent"},
     }
-    assert stored == {("taskseed.ews:mail.example.com", "DOMAIN\\agent"): "new-secret"}
+    assert stored == {("taskseed.ews-cli:mail.example.com", "DOMAIN\\agent"): "new-secret"}
     assert "new-secret" not in json.dumps(output)
 
 
@@ -67,7 +67,7 @@ def test_auth_set_password_handles_invalid_profile(
     tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    profile_path = tmp_path / ".config" / "taskseed" / "ews" / "profiles.toml"
+    profile_path = tmp_path / ".config" / "taskseed" / "ews-cli" / "profiles.toml"
     profile_path.parent.mkdir(parents=True)
     profile_path.write_text("not valid toml", encoding="utf-8")
     monkeypatch.setattr(getpass, "getpass", _unexpected_password_prompt)
@@ -182,7 +182,7 @@ def test_auth_delete_password_removes_keyring_password(
         "ok": True,
         "data": {"username": "DOMAIN\\agent"},
     }
-    assert deleted == [("taskseed.ews:mail.example.com", "DOMAIN\\agent")]
+    assert deleted == [("taskseed.ews-cli:mail.example.com", "DOMAIN\\agent")]
 
 
 def test_auth_delete_password_handles_missing_profile(

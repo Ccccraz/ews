@@ -8,11 +8,11 @@ import pytest
 from pydantic import JsonValue, SecretStr
 from pytest import CaptureFixture, MonkeyPatch
 
-from ews.application import MailboxApplicationService
-from ews.cli import app
-from ews.commands.context import CommandContext
-from ews.config import PasswordStore, ProfileStore
-from ews.models import (
+from ews_cli.application import MailboxApplicationService
+from ews_cli.cli import app
+from ews_cli.commands.context import CommandContext
+from ews_cli.config import PasswordStore, ProfileStore
+from ews_cli.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
     Contact,
@@ -38,7 +38,7 @@ from ews.models import (
     OutgoingReply,
     Profile,
 )
-from ews.storage import SqliteMailboxStore
+from ews_cli.storage import SqliteMailboxStore
 
 
 class ContactGateway:
@@ -338,7 +338,7 @@ def _configure_context(tmp_path: Path, monkeypatch: MonkeyPatch, *, ready: bool)
         service = MailboxApplicationService(profile_store, PasswordStore(), gateway, store)
         return CommandContext(user=user, service=service)
 
-    monkeypatch.setattr("ews.cli._build_context", build_context)
+    monkeypatch.setattr("ews_cli.cli._build_context", build_context)
     if not ready:
         return gateway
 

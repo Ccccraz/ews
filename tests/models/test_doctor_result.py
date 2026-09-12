@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from ews.models import DoctorCheck, DoctorResult
+from ews_cli.models import DoctorCheck, DoctorResult
 
 
 def test_doctor_check_names_are_stable() -> None:

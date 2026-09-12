@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from ews.models import ConnectionTestResult
+from ews_cli.models import ConnectionTestResult
 
 
 def test_connection_test_result_contains_observable_ews_metadata() -> None:
