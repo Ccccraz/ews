@@ -3,6 +3,7 @@ from ews.models.connection_test import ConnectionTestResult
 from ews.models.doctor import DoctorCheck, DoctorResult
 from ews.models.mailbox import (
     AttachmentMetadata,
+    FlagStatus,
     Folder,
     FolderListResult,
     Importance,
@@ -31,6 +32,7 @@ from ews.models.sync import (
     MessageSyncCounts,
     MessageSyncResult,
 )
+from ews.models.thread import MessageThreadQuery, MessageThreadResult, ThreadMessage
 from ews.models.tls import TlsCheckResult
 from ews.models.user import User
 from ews.models.write import MessageMoveResult, MessageReadStateResult, MessageSendResult
@@ -41,6 +43,7 @@ __all__ = [
     "ConnectionTestResult",
     "DoctorCheck",
     "DoctorResult",
+    "FlagStatus",
     "Folder",
     "FolderListResult",
     "FolderChange",
@@ -63,6 +66,8 @@ __all__ = [
     "MessageSendResult",
     "MessageSyncCounts",
     "MessageSyncResult",
+    "MessageThreadQuery",
+    "MessageThreadResult",
     "MailboxSyncResult",
     "OutgoingMessage",
     "OutgoingReply",
@@ -70,6 +75,7 @@ __all__ = [
     "Profile",
     "ReadState",
     "Server",
+    "ThreadMessage",
     "TlsCheckResult",
     "User",
 ]

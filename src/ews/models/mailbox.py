@@ -23,6 +23,14 @@ class Importance(StrEnum):
     HIGH = "high"
 
 
+class FlagStatus(StrEnum):
+    """Normalized PidTagFlagStatus of a message."""
+
+    NONE = "none"
+    COMPLETE = "complete"
+    FLAGGED = "flagged"
+
+
 class Folder(ContractModel):
     """A mail-capable folder."""
 
@@ -53,6 +61,13 @@ class MessageSummary(ContractModel):
     is_read: bool
     has_attachments: bool
     importance: Importance
+    conversation_id: str | None = None
+    conversation_topic: str | None = None
+    conversation_index: str | None = None
+    conversation_depth: int | None = Field(default=None, ge=0)
+    is_draft: bool = False
+    categories: list[str] = []
+    flag_status: FlagStatus = FlagStatus.NONE
 
     @field_validator("received_at")
     @classmethod
@@ -101,6 +116,8 @@ class MessageDetail(MessageSummary):
     body: MessageBody
     internet_headers: list[InternetHeader]
     attachments: list[AttachmentMetadata]
+    text_body: str | None = None
+    references: str | None = None
 
     @field_validator("sent_at", "created_at")
     @classmethod

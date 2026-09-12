@@ -3,7 +3,7 @@ from ews.commands.auth import delete_password, password_status, set_password
 from ews.commands.config import show_config, show_config_path
 from ews.commands.doctor import doctor
 from ews.commands.folder import list_folders
-from ews.commands.message import get_message, list_messages
+from ews.commands.message import get_message, get_thread, list_messages
 from ews.commands.message_write import (
     mark_read,
     move_message,
@@ -17,6 +17,7 @@ from ews.commands.test_access import test_access
 
 __all__ = [
     "get_message",
+    "get_thread",
     "delete_password",
     "doctor",
     "list_folders",

@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import ClassVar
 
 from pydantic import TypeAdapter, ValidationError
-from sqlalchemy import URL, func, inspect
+from sqlalchemy import URL, Index, func, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import NullPool
 from sqlmodel import Field, Session, SQLModel, col, create_engine, delete, select
 
 from ews.models import (
     AttachmentMetadata,
+    FlagStatus,
     Folder,
     FolderChange,
     FolderChangeKind,
@@ -30,14 +31,15 @@ from ews.models import (
     ReadState,
 )
 
-_SCHEMA_VERSION = "2"
-_PREVIOUS_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "3"
+_REBUILD_SCHEMA_VERSIONS = {"1", "2"}
 _SCHEMA_VERSION_KEY = "schema_version"
 
 _ADDRESS_ADAPTER = TypeAdapter[MailboxAddress | None](MailboxAddress | None)
 _ADDRESS_LIST_ADAPTER = TypeAdapter(list[MailboxAddress])
 _HEADER_LIST_ADAPTER = TypeAdapter(list[InternetHeader])
 _ATTACHMENT_LIST_ADAPTER = TypeAdapter(list[AttachmentMetadata])
+_CATEGORY_LIST_ADAPTER = TypeAdapter(list[str])
 
 
 class CacheMetadataRecord(SQLModel, table=True):
@@ -62,6 +64,7 @@ class FolderRecord(SQLModel, table=True):
 
 class MessageRecord(SQLModel, table=True):
     __tablename__: ClassVar[str] = "messages"  # pyright: ignore[reportIncompatibleVariableOverride]
+    __table_args__ = (Index("ix_messages_conversation", "mailbox", "conversation_id"),)
 
     mailbox: str = Field(primary_key=True)
     id: str = Field(primary_key=True)
@@ -86,6 +89,15 @@ class MessageRecord(SQLModel, table=True):
     body_content: str
     internet_headers_json: str
     attachments_json: str
+    conversation_id: str | None = None
+    conversation_topic: str | None = None
+    conversation_index: str | None = None
+    conversation_depth: int | None = None
+    text_body: str | None = None
+    references: str | None = None
+    is_draft: bool = False
+    categories_json: str = "[]"
+    flag_status: str = FlagStatus.NONE.value
 
 
 class HierarchySyncStateRecord(SQLModel, table=True):
@@ -137,20 +149,22 @@ class SqliteMailboxStore:
         self._engine = create_engine(database_url, poolclass=NullPool)
 
     def initialize(self) -> None:
-        """Create schema v2 or migrate a schema-v1 cache without marking it ready."""
+        """Create schema v3, rebuilding any older cache without marking it ready."""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             version = self._existing_schema_version()
-            if version not in {None, _PREVIOUS_SCHEMA_VERSION, _SCHEMA_VERSION}:
+            if version not in {None, _SCHEMA_VERSION, *_REBUILD_SCHEMA_VERSIONS}:
                 raise UnsupportedCacheSchemaVersionError(
                     f"Unsupported cache schema version: {version}"
                 )
+            if version in _REBUILD_SCHEMA_VERSIONS:
+                self._rebuild_older_schema()
             SQLModel.metadata.create_all(self._engine)
             with Session(self._engine) as session:
                 metadata = session.get(CacheMetadataRecord, _SCHEMA_VERSION_KEY)
                 if metadata is None:
                     session.add(CacheMetadataRecord(key=_SCHEMA_VERSION_KEY, value=_SCHEMA_VERSION))
-                elif metadata.value == _PREVIOUS_SCHEMA_VERSION:
+                elif metadata.value in _REBUILD_SCHEMA_VERSIONS:
                     metadata.value = _SCHEMA_VERSION
                     session.add(metadata)
                 session.commit()
@@ -159,13 +173,22 @@ class SqliteMailboxStore:
         except (OSError, SQLAlchemyError) as error:
             raise MailboxStoreError(f"Unable to initialize mailbox cache: {self.path}") from error
 
+    def _rebuild_older_schema(self) -> None:
+        """Drop cached messages so the next synchronization refills every new column."""
+        with self._engine.begin() as connection:
+            connection.execute(text("DROP TABLE IF EXISTS messages"))
+        with Session(self._engine) as session:
+            session.exec(delete(ItemSyncStateRecord))
+            session.exec(delete(MailboxStateRecord))
+            session.commit()
+
     def require_ready(self, mailbox: str) -> None:
         """Require a complete initial synchronization for the selected mailbox."""
         mailbox_key = _mailbox_key(mailbox)
         if not self.path.is_file():
             raise MailboxCacheNotReadyError("Mailbox cache is not ready")
         try:
-            if self._existing_schema_version() == _PREVIOUS_SCHEMA_VERSION:
+            if self._existing_schema_version() in _REBUILD_SCHEMA_VERSIONS:
                 raise MailboxCacheNotReadyError("Mailbox cache is not ready")
             with self._session() as session:
                 state = session.get(MailboxStateRecord, mailbox_key)
@@ -446,6 +469,50 @@ class SqliteMailboxStore:
         except SQLAlchemyError as error:
             raise MailboxStoreError("Unable to read cached message") from error
 
+    def count_thread(self, mailbox: str, conversation_id: str) -> int:
+        """Count every cached message of one conversation across all folders."""
+        mailbox_key = _mailbox_key(mailbox)
+        try:
+            with self._session() as session:
+                return int(
+                    session.exec(
+                        select(func.count())
+                        .select_from(MessageRecord)
+                        .where(
+                            col(MessageRecord.mailbox) == mailbox_key,
+                            col(MessageRecord.conversation_id) == conversation_id,
+                        )
+                    ).one()
+                )
+        except SQLAlchemyError as error:
+            raise MailboxStoreError("Unable to count cached conversation") from error
+
+    def list_thread(
+        self, mailbox: str, conversation_id: str, *, offset: int, limit: int
+    ) -> tuple[list[MessageDetail], bool]:
+        """Return one chronological page of a conversation's cached messages."""
+        mailbox_key = _mailbox_key(mailbox)
+        try:
+            with self._session() as session:
+                rows = session.exec(
+                    select(MessageRecord)
+                    .where(
+                        col(MessageRecord.mailbox) == mailbox_key,
+                        col(MessageRecord.conversation_id) == conversation_id,
+                    )
+                    .order_by(col(MessageRecord.received_at), col(MessageRecord.id))
+                    .offset(offset)
+                    .limit(limit + 1)
+                ).all()
+                return (
+                    [_message_from_row(row) for row in rows[:limit]],
+                    len(rows) > limit,
+                )
+        except (TypeError, ValueError, ValidationError) as error:
+            raise MailboxStoreError("Cached message data is invalid") from error
+        except SQLAlchemyError as error:
+            raise MailboxStoreError("Unable to read cached conversation") from error
+
     def _existing_schema_version(self) -> str | None:
         if not self.path.is_file():
             return None
@@ -566,6 +633,15 @@ def _message_row(mailbox: str, message: MessageDetail) -> MessageRecord:
         body_content=message.body.content,
         internet_headers_json=_HEADER_LIST_ADAPTER.dump_json(message.internet_headers).decode(),
         attachments_json=_ATTACHMENT_LIST_ADAPTER.dump_json(message.attachments).decode(),
+        conversation_id=message.conversation_id,
+        conversation_topic=message.conversation_topic,
+        conversation_index=message.conversation_index,
+        conversation_depth=message.conversation_depth,
+        text_body=message.text_body,
+        references=message.references,
+        is_draft=message.is_draft,
+        categories_json=_CATEGORY_LIST_ADAPTER.dump_json(message.categories).decode(),
+        flag_status=message.flag_status.value,
     )
 
 
@@ -580,6 +656,13 @@ def _message_summary_from_row(row: MessageRecord) -> MessageSummary:
         is_read=row.is_read,
         has_attachments=row.has_attachments,
         importance=Importance(row.importance),
+        conversation_id=row.conversation_id,
+        conversation_topic=row.conversation_topic,
+        conversation_index=row.conversation_index,
+        conversation_depth=row.conversation_depth,
+        is_draft=row.is_draft,
+        categories=_CATEGORY_LIST_ADAPTER.validate_json(row.categories_json),
+        flag_status=FlagStatus(row.flag_status),
     )
 
 
@@ -595,6 +678,13 @@ def _message_from_row(row: MessageRecord) -> MessageDetail:
             "is_read": row.is_read,
             "has_attachments": row.has_attachments,
             "importance": row.importance,
+            "conversation_id": row.conversation_id,
+            "conversation_topic": row.conversation_topic,
+            "conversation_index": row.conversation_index,
+            "conversation_depth": row.conversation_depth,
+            "is_draft": row.is_draft,
+            "categories": _CATEGORY_LIST_ADAPTER.validate_json(row.categories_json),
+            "flag_status": row.flag_status,
             "sender": _ADDRESS_ADAPTER.validate_json(row.sender_json),
             "to": _ADDRESS_LIST_ADAPTER.validate_json(row.to_json),
             "cc": _ADDRESS_LIST_ADAPTER.validate_json(row.cc_json),
@@ -607,5 +697,7 @@ def _message_from_row(row: MessageRecord) -> MessageDetail:
             "body": {"content_type": row.body_content_type, "content": row.body_content},
             "internet_headers": _HEADER_LIST_ADAPTER.validate_json(row.internet_headers_json),
             "attachments": _ATTACHMENT_LIST_ADAPTER.validate_json(row.attachments_json),
+            "text_body": row.text_body,
+            "references": row.references,
         }
     )

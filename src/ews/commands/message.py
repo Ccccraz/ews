@@ -3,7 +3,7 @@ from typing import Annotated
 from cyclopts import Parameter
 
 from ews.commands.context import CommandContext, run_read
-from ews.models import MessageListQuery, MessageListResult
+from ews.models import MessageListQuery, MessageListResult, MessageThreadQuery, MessageThreadResult
 
 
 def list_messages(
@@ -47,3 +47,19 @@ def get_message(
 ) -> int:
     """Get one message with body, headers, and attachment metadata."""
     return run_read(context, lambda user: context.service.get_message(user, message_id))
+
+
+def get_thread(
+    message_id: str,
+    *,
+    offset: str = "0",
+    limit: str = "20",
+    context: Annotated[CommandContext, Parameter(parse=False, show=False)],
+) -> int:
+    """Get every cached message of one conversation in reading order."""
+
+    def operation(user: str) -> MessageThreadResult:
+        query = MessageThreadQuery.model_validate({"offset": offset, "limit": limit})
+        return context.service.get_thread(user, message_id, query)
+
+    return run_read(context, operation)

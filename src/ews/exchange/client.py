@@ -43,6 +43,7 @@ from ews.models import (
     AttachmentMetadata,
     AttachmentSaveResult,
     ConnectionTestResult,
+    FlagStatus,
     Folder,
     FolderChange,
     FolderChangeKind,
@@ -83,6 +84,14 @@ DETAIL_FIELDS = (
     "body",
     "headers",
     "attachments",
+    "conversation_id",
+    "conversation_topic",
+    "conversation_index",
+    "text_body",
+    "references",
+    "is_draft",
+    "categories",
+    "flag_status",
 )
 FOLDER_SYNC_FIELDS = ("parent_folder_id", "total_count", "unread_count", "is_hidden")
 REPLY_FIELDS = ("subject", "author", "to_recipients", "cc_recipients", "bcc_recipients")
@@ -94,6 +103,8 @@ MAIL_NAVIGATION_EXCLUDED_WELL_KNOWN_NAMES = {
     "serverfailures",
     "syncissues",
 }
+CONVERSATION_ROOT_INDEX_LENGTH = 22
+CONVERSATION_REPLY_INDEX_LENGTH = 5
 
 
 class IsHidden(ExtendedProperty):
@@ -101,6 +112,13 @@ class IsHidden(ExtendedProperty):
 
     property_tag = 0x10F4
     property_type = "Boolean"
+
+
+class FlagStatusProperty(ExtendedProperty):
+    """PidTagFlagStatus (0x1090) message property."""
+
+    property_tag = 0x1090
+    property_type = "Integer"
 
 
 class EwsAuthenticationError(Exception):
@@ -417,6 +435,7 @@ def _with_account[ResultT](
     operation: Callable[[Any], ResultT],
 ) -> ResultT:
     _ensure_folder_extensions()
+    _ensure_item_extensions()
     credentials = Credentials(
         username=profile.user.username,
         password=password.get_secret_value(),
@@ -578,6 +597,16 @@ def _ensure_folder_extensions() -> None:
         EwsFolder.register("is_hidden", IsHidden)
 
 
+def _ensure_item_extensions() -> None:
+    try:
+        Message.get_field_by_fieldname("flag_status")
+    except InvalidField:
+        Message.register("flag_status", FlagStatusProperty)
+    except AttributeError:
+        # A test double replaced the EWS item class; there is nothing to register.
+        return
+
+
 def _well_known_name(folder: Any) -> str | None:
     return getattr(type(folder), "DISTINGUISHED_FOLDER_ID", None)
 
@@ -589,6 +618,7 @@ def _folder_from_id(account: Any, folder_id: str) -> Any:
 def _message_detail(item: Any) -> MessageDetail:
     author = item.author or item.sender
     body = item.body
+    conversation_index = getattr(item, "conversation_index", None)
     return MessageDetail(
         id=str(item.id),
         change_key=str(item.changekey),
@@ -599,6 +629,13 @@ def _message_detail(item: Any) -> MessageDetail:
         is_read=bool(item.is_read),
         has_attachments=bool(item.has_attachments),
         importance=Importance(str(item.importance).casefold()),
+        conversation_id=_conversation_id(getattr(item, "conversation_id", None)),
+        conversation_topic=getattr(item, "conversation_topic", None) or None,
+        conversation_index=_conversation_index(conversation_index),
+        conversation_depth=_conversation_depth(conversation_index),
+        is_draft=bool(getattr(item, "is_draft", False)),
+        categories=[str(category) for category in getattr(item, "categories", None) or []],
+        flag_status=_flag_status(getattr(item, "flag_status", None)),
         sender=_mail_address(item.sender),
         to=_mail_addresses(item.to_recipients),
         cc=_mail_addresses(item.cc_recipients),
@@ -617,7 +654,29 @@ def _message_detail(item: Any) -> MessageDetail:
             for header in item.headers or []
         ],
         attachments=[_attachment_metadata(attachment) for attachment in item.attachments or []],
+        text_body=getattr(item, "text_body", None) or None,
+        references=getattr(item, "references", None) or None,
     )
+
+
+def _conversation_id(value: Any) -> str | None:
+    return None if value is None else str(value.id)
+
+
+def _conversation_index(value: Any) -> str | None:
+    return None if value is None else bytes(value).hex()
+
+
+def _conversation_depth(value: Any) -> int | None:
+    if value is None:
+        return None
+    return max(
+        0, (len(bytes(value)) - CONVERSATION_ROOT_INDEX_LENGTH) // CONVERSATION_REPLY_INDEX_LENGTH
+    )
+
+
+def _flag_status(value: Any) -> FlagStatus:
+    return {1: FlagStatus.COMPLETE, 2: FlagStatus.FLAGGED}.get(value, FlagStatus.NONE)
 
 
 def _mail_address(mailbox: Any | None) -> MailboxAddress | None:
