@@ -53,7 +53,11 @@ class SyncGateway:
             self.invalidate_hierarchy = False
             raise InvalidSyncStateError("invalid")
         changes = [] if sync_state is not None else [_folder_change()]
-        return FolderSyncResult(changes=changes, sync_state="hierarchy-state")
+        return FolderSyncResult(
+            changes=changes,
+            sync_state="hierarchy-state",
+            well_known_folder_ids={"inbox": "inbox-id"},
+        )
 
     def sync_items(
         self,

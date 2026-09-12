@@ -267,23 +267,26 @@ class SqliteMailboxStore:
                     position = existing.position if existing is not None else next_position
                     if existing is None:
                         next_position += 1
-                    if change.kind is FolderChangeKind.CREATE:
                         created += 1
-                    else:
+                    elif change.kind is FolderChangeKind.UPDATE:
                         updated += 1
                     session.merge(_folder_row(mailbox_key, position, folder))
 
-                for well_known_name, folder_id in (well_known_folder_ids or {}).items():
-                    old_rows = session.exec(
+                # A supplied id map is the only source of well-known names: clear every name
+                # first, so a folder that no longer resolves loses a stale one, then apply
+                # the map. This repair is deliberately not counted as a folder change.
+                if well_known_folder_ids is not None:
+                    stale_rows = session.exec(
                         select(FolderRecord).where(
                             col(FolderRecord.mailbox) == mailbox_key,
-                            func.lower(col(FolderRecord.well_known_name))
-                            == well_known_name.casefold(),
+                            col(FolderRecord.well_known_name).is_not(None),
                         )
                     ).all()
-                    for row in old_rows:
+                    for row in stale_rows:
                         row.well_known_name = None
                         session.add(row)
+
+                for well_known_name, folder_id in (well_known_folder_ids or {}).items():
                     folder_row = session.get(FolderRecord, (mailbox_key, folder_id))
                     if folder_row is not None:
                         folder_row.well_known_name = well_known_name
