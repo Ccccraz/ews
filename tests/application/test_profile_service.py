@@ -72,7 +72,7 @@ def test_delete_profile_tolerates_a_missing_password(
     assert store.list() == ()
 
 
-def test_delete_profile_preserves_profile_when_keychain_fails(
+def test_delete_profile_preserves_profile_when_keyring_fails(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     path = tmp_path / "profiles.toml"

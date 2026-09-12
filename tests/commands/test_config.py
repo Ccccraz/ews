@@ -133,7 +133,7 @@ def test_config_list_returns_empty_profiles_when_file_is_absent(
     assert output["data"] == {"profiles": []}
 
 
-def test_config_delete_keeps_profile_when_keychain_fails(
+def test_config_delete_keeps_profile_when_keyring_fails(
     tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))

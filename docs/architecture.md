@@ -34,11 +34,11 @@ CLI -> Application Service -> MailboxGateway Protocol -> Exchangelib Adapter
 
 - 使用 exchangelib，不自行维护 EWS SOAP、WSDL 或 XML 映射；目标是本地 Exchange，使用 NTLM 与 HTTPS（[Microsoft 的认证说明](https://learn.microsoft.com/en-us/exchange/client-developer/exchange-web-services/authentication-and-ews-in-exchange)）。
 - 使用显式 EWS endpoint 并关闭 Autodiscover；每个 profile 只对应一个邮箱，使用 delegate access，不支持共享邮箱或 impersonation。
-- TLS 必须启用证书校验，并通过 Truststore 使用 macOS 系统信任库；不支持自定义 CA 或跳过校验。
-- 非敏感配置（endpoint、mailbox SMTP address、NTLM username）使用 TOML 存放在 `$HOME/.config/taskseed/ews/profiles.toml` 的 `[[profiles]]` 数组中，标准库 `tomllib` 读取、Tomli-W 写入，并通过同目录临时文件原子替换。mailbox、username 及交叉别名忽略大小写后唯一；mailbox 是新增或更新时的稳定身份。
-- 密码只存 macOS Keychain（service 为 `taskseed.ews:<endpoint-host>`，account 为 NTLM username），应用内使用 Pydantic `SecretStr`；密码不得出现在 TOML、命令行参数、stdout、stderr 或日志中。
-- 旧 `profile.toml` 不读取也不自动迁移。升级时对每个账户重新执行 `ews set`，或手工把旧 `[server]`/`[user]` 包装为 `profiles.toml` 中的 `[[profiles]]`、`[profiles.server]`/`[profiles.user]`。Keychain 键格式不变。
-- 不支持无桌面 Linux、环境变量密码回退和文件型 Keyring。
+- TLS 必须启用证书校验，并通过 Truststore 使用**操作系统信任库**（macOS Keychain、Windows 证书库、Linux OpenSSL 系统 CA）；Linux 需要 OpenSSL 3.0.3+ 且系统安装了 `ca-certificates`。不支持自定义 CA 或跳过校验。
+- 非敏感配置（endpoint、mailbox SMTP address、NTLM username）使用 TOML 存放在 `$HOME/.config/taskseed/ews/profiles.toml` 的 `[[profiles]]` 数组中，标准库 `tomllib` 读取、Tomli-W 写入，并通过同目录临时文件原子替换。`$HOME` 即 Python `Path.home()`，三平台路径规则统一（Windows 为 `%USERPROFILE%`），不按 OS 分支。mailbox、username 及交叉别名忽略大小写后唯一；mailbox 是新增或更新时的稳定身份。
+- 密码存**系统 keyring**（`keyring` 可移植 API；service 为 `taskseed.ews:<endpoint-host>`，account 为 NTLM username）：macOS 用 Keychain、Windows 用 Credential Manager、Linux 用桌面 Secret Service（D-Bus，如 GNOME Keyring/KWallet）。应用内使用 Pydantic `SecretStr`；密码不得出现在 TOML、命令行参数、stdout、stderr 或日志中。
+- 旧 `profile.toml` 不读取也不自动迁移。升级时对每个账户重新执行 `ews set`，或手工把旧 `[server]`/`[user]` 包装为 `profiles.toml` 中的 `[[profiles]]`、`[profiles.server]`/`[profiles.user]`。keyring 键格式不变。
+- 平台支持：macOS 已完成真实 EWS 验收；Windows 与 Linux 已实现但未做真实 EWS 验收。Linux 仅支持**桌面**会话（需要运行中的 Secret Service），不支持无桌面/SSH/容器。三平台都不支持环境变量密码回退和文件型 keyring。
 
 ## 本地缓存
 
@@ -107,7 +107,7 @@ ews --user U attachment save   <message-id> <attachment-id> --path <file>
 - `--subject` 在 `send` 中默认为空串，在 `reply`/`reply-all` 中省略表示使用标准回复主题；`mark-read` 默认置为已读，`--unread` 置为未读。
 - `contact list` 默认返回全部联系人文件夹中的缓存联系人，按 `file_as`（缺失时 `display_name`）排序；`--folder` 接受联系人文件夹 ID 或 well-known name（当前只有 `contacts`），`--search` 对显示名、file_as、公司、部门和邮箱做大小写不敏感子串匹配，分页复用 `--limit`（默认 50、最大 200）与 `--offset`。`contact get` 以 EWS contact ID 取单条；两者都只读缓存，未知文件夹或联系人返回 `resource_not_found`/4。
 - `contact search <query>` 是**联网只读**命令，实时查询企业目录（GAL），不属于本地缓存、不受 `ready` 门控；`--limit` 默认 25、范围 1–100，仅做客户端截断（EWS 单次上限 100）。它与 `contact list --search`（搜本地缓存个人联系人）语义不同，文档与 `--help` 都要点明。
-- `set` 与 `auth set-password` 只接受无回显的交互输入（不接受密码参数），密码写入 Keychain；`config list` 返回按 mailbox 排序的全部 profile，`config show` 不显示秘密，`config path` 返回实际配置路径。`config delete` 先删除 Keychain 项再删除 profile，密码缺失视为成功，Keychain 后端失败时保留 profile，且永不删除 SQLite 缓存。`doctor` 做完整诊断并返回 Exchange build/version，`test` 只做一次真实 Inbox 元数据请求。
+- `set` 与 `auth set-password` 只接受无回显的交互输入（不接受密码参数），密码写入系统 keyring；`config list` 返回按 mailbox 排序的全部 profile，`config show` 不显示秘密，`config path` 返回实际配置路径。`config delete` 先删除 keyring 项再删除 profile，密码缺失视为成功，keyring 后端失败时保留 profile，且永不删除 SQLite 缓存。`doctor` 做完整诊断并返回 Exchange build/version，`test` 只做一次真实 Inbox 元数据请求。
 
 ### JSON 输出与退出码
 
@@ -126,7 +126,7 @@ ews --user U attachment save   <message-id> <attachment-id> --path <file>
 | 附件目标文件已存在 | `destination_exists` | 2 | false |
 | profiles TOML 损坏、身份冲突或本地 I/O 失败 | `configuration_error` | 2 | false |
 | 缓存读写失败 | `cache_error` | 2 | false |
-| Keychain 无密码或失败、NTLM 被拒、SendAs 被拒 | `authentication_error` | 3 | false |
+| 系统 keyring 无密码、后端不可用、被锁或其它失败，NTLM 被拒，SendAs 被拒 | `authentication_error` | 3 | false |
 | `--user` 选择不到 profile（含配置文件不存在或为空） | `profile_not_found` | 4 | false |
 | 缓存未 ready | `cache_not_ready` | 4 | false |
 | 消息、文件夹或附件不存在 | `resource_not_found` | 4 | false |
@@ -135,6 +135,8 @@ ews --user U attachment save   <message-id> <attachment-id> --path <file>
 change key 失效归入可重试的 `service_error`，因为重试会重新读取服务端状态。适配器用 `EwsNotFoundError` 与 `EwsRejectedError` 承载"不存在"与"请求非法"的区分；附件下载另加 `AttachmentNotFoundError`、`UnsupportedAttachmentError`、`DestinationExistsError` 和 `InvalidDestinationError`。
 
 未预期的内部错误由 CLI 顶层捕获：stdout 仍只输出一个 envelope（`code` 为 `internal_error`、退出码 `1`、`retryable` 为 false，`details.type` 给出异常类名），完整 traceback 只作为诊断写入 stderr（默认级别即可见，且按上面的规则不含局部变量）。`SystemExit` 与 `KeyboardInterrupt` 不属于 `Exception`，不受此捕获影响。
+
+`doctor` 失败时在 `details` 中给出失败阶段 `check`（`configuration`、`keyring`、`system_tls`、`ews_login`）；keyring 阶段另有 `reason`，取值 `missing`（未存密码）、`backend_unavailable`（无可用后端）、`locked`（被锁）或 `error`（其它 keyring 失败），错误码与退出码保持上表不变。
 
 ## 读取行为
 
@@ -194,7 +196,7 @@ Exchange 的 conversation 就是这里所说的 thread：`ConversationId` 是会
 
 ## 兼容性与验收
 
-- 真实 EWS 验收无法在普通 CI 中运行，必须在企业网络内用真实邮箱手工执行：先用 `doctor` 记录 Exchange build/version 并验证 TLS、Keychain 和 NTLM，再验证文件夹遍历、分页与全部过滤器，然后发送唯一主题邮件并验证 list/get/正文/Internet headers；分别保存新邮件、reply 与 reply-all 草稿，确认 Drafts 中存在且没有发信，再执行 `sync` 验证 `is_draft=true`；用预置带附件邮件验证元数据与文件保存，最后验证 mark-read、reply、reply-all 和 move。
+- 真实 EWS 验收无法在普通 CI 中运行，必须在企业网络内用真实邮箱手工执行：先用 `doctor` 记录 Exchange build/version 并验证 TLS、系统 keyring 和 NTLM，再验证文件夹遍历、分页与全部过滤器，然后发送唯一主题邮件并验证 list/get/正文/Internet headers；分别保存新邮件、reply 与 reply-all 草稿，确认 Drafts 中存在且没有发信，再执行 `sync` 验证 `is_draft=true`；用预置带附件邮件验证元数据与文件保存，最后验证 mark-read、reply、reply-all 和 move。
 - 联系人验收：`sync` 后 `contact list|get` 的显示名、邮箱 label、电话/地址/IM label 与 OWA 一致；在服务器新增、修改、删除一个联系人后再次 `sync`，确认增量收敛（删除会清掉缓存条目）；确认 `IPF.Contact.DistributionList` 与联系人照片不在结果中。
 - 目录验收：`contact search <姓氏>` 能返回 OWA Directory 中同名同事，`email_address` 是可用的 SMTP 地址（不是 X500 DN），部门/职位/电话/地址与 OWA 一致；`mailbox_type` 能区分个人邮箱与分发列表；对会触碰 100 上限的查询返回 `truncated: true`。
 - 验收中的测试数据一律由人工清理：CLI 不暴露删除能力，验收本身也只使用 `move` 复原，不执行任何删除。
@@ -205,7 +207,7 @@ Exchange 的 conversation 就是这里所说的 thread：`ConversationId` 是会
 - 邮件删除、转发，以及修改、发送或删除已有草稿；发送附件或草稿附件；以"新邮件"方式实现带附件的回复；附件上传。
 - 日历和任务；通讯录写入（新建/修改/删除联系人）；GAL 全量下载/导出（EWS 不允许浏览 GAL，只支持 `ResolveNames` 在线搜索）；联系人分发列表（`IPF.Contact.DistributionList`）与联系人照片；MIME `.eml` 导出（含内嵌邮件附件的导出）。
 - 共享邮箱和 impersonation；默认/当前 profile；Autodiscover；OAuth、Kerberos/GSSAPI 和 Basic Auth。
-- 自定义 CA、禁用 TLS 校验；无桌面 Linux 与 Windows 客户端。
+- 自定义 CA、禁用 TLS 校验；无桌面/SSH/容器中的 Linux（系统 keyring 需要运行中的 Secret Service）。
 - 长驻进程、JSONL 协议和异步执行。
 - 显示名形式的收件人（`Name <addr>`）、回复时覆盖收件人、写后自动同步。
 - `message list --conversation-id` 与跨文件夹列表（会话查询统一由 `message thread` 承担）、会话级写操作、树形输出；附件内容缓存或把附件内容放进 JSON。

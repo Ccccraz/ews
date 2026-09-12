@@ -15,7 +15,7 @@ from ews.config import ProfileStore
 from ews.models import Profile
 
 
-def test_auth_set_password_updates_keychain(
+def test_auth_set_password_updates_system_keyring(
     tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
 ) -> None:
     _configure_profile(tmp_path, monkeypatch)
@@ -162,7 +162,7 @@ def test_auth_status_handles_keyring_failure(
     assert _error(output)["code"] == "authentication_error"
 
 
-def test_auth_delete_password_removes_keychain_password(
+def test_auth_delete_password_removes_keyring_password(
     tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
 ) -> None:
     _configure_profile(tmp_path, monkeypatch)

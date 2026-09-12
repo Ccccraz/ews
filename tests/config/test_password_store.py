@@ -2,11 +2,23 @@ from collections.abc import Callable
 
 import keyring
 import pytest
-from keyring.errors import KeyringError, PasswordDeleteError
+from keyring.errors import (
+    InitError,
+    KeyringError,
+    KeyringLocked,
+    NoKeyringError,
+    PasswordDeleteError,
+)
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
-from ews.config import PasswordNotFoundError, PasswordStore, PasswordStoreError
+from ews.config import (
+    PasswordBackendUnavailableError,
+    PasswordNotFoundError,
+    PasswordStore,
+    PasswordStoreError,
+    PasswordStoreLockedError,
+)
 from ews.models import Profile
 
 PROFILE_DATA = {
@@ -41,6 +53,22 @@ class FailingKeyring:
 
     def delete_password(self, service: str, username: str) -> None:
         raise KeyringError("Keyring is unavailable")
+
+
+class ErrorKeyring:
+    """A backend whose every operation raises one fixed error."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def get_password(self, service: str, username: str) -> str | None:
+        raise self._error
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        raise self._error
+
+    def delete_password(self, service: str, username: str) -> None:
+        raise self._error
 
 
 @pytest.fixture
@@ -107,3 +135,42 @@ def test_backend_errors_are_wrapped(
 
     with pytest.raises(PasswordStoreError, match="system keyring"):
         operations[operation]()
+
+
+@pytest.mark.parametrize("operation", ["get", "set", "delete"])
+@pytest.mark.parametrize(
+    "error", [NoKeyringError("no backend"), InitError("backend did not initialize")]
+)
+def test_unavailable_backend_errors_are_classified(
+    profile: Profile, operation: str, error: Exception, monkeypatch: MonkeyPatch
+) -> None:
+    _install_backend(monkeypatch, ErrorKeyring(error))
+    store = PasswordStore()
+
+    with pytest.raises(PasswordBackendUnavailableError, match="No usable system keyring backend"):
+        _operations(store, profile)[operation]()
+
+
+@pytest.mark.parametrize("operation", ["get", "set", "delete"])
+def test_locked_keyring_errors_are_classified(
+    profile: Profile, operation: str, monkeypatch: MonkeyPatch
+) -> None:
+    _install_backend(monkeypatch, ErrorKeyring(KeyringLocked("Keyring is locked")))
+    store = PasswordStore()
+
+    with pytest.raises(PasswordStoreLockedError, match="locked"):
+        _operations(store, profile)[operation]()
+
+
+def _install_backend(monkeypatch: MonkeyPatch, backend: ErrorKeyring) -> None:
+    monkeypatch.setattr(keyring, "get_password", backend.get_password)
+    monkeypatch.setattr(keyring, "set_password", backend.set_password)
+    monkeypatch.setattr(keyring, "delete_password", backend.delete_password)
+
+
+def _operations(store: PasswordStore, profile: Profile) -> dict[str, Callable[[], object]]:
+    return {
+        "get": lambda: store.get(profile),
+        "set": lambda: store.set(profile, SecretStr("top-secret")),
+        "delete": lambda: store.delete(profile),
+    }

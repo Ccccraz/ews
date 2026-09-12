@@ -256,7 +256,7 @@ def test_service_rejects_a_different_user(tmp_path: Path, monkeypatch: MonkeyPat
         raise AssertionError("Expected UserNotFoundError")
 
 
-def test_service_diagnoses_profile_keychain_tls_and_login(
+def test_service_diagnoses_profile_keyring_tls_and_login(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     tls_probe = FakeTlsProbe()

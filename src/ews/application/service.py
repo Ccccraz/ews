@@ -97,7 +97,7 @@ class MailboxApplicationService:
         return self._gateway.test_access(profile, password)
 
     def diagnose(self, selected_user: str) -> DoctorResult:
-        """Verify profile, keychain, system TLS and EWS login in one run."""
+        """Verify profile, system keyring, system TLS and EWS login in one run."""
         profile = self._load_profile(selected_user)
         password = self._password_store.get(profile)
         tls = self._tls_probe.probe(profile)

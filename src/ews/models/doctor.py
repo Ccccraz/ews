@@ -11,13 +11,13 @@ class DoctorCheck(StrEnum):
     """A stage verified by the doctor command, in execution order."""
 
     CONFIGURATION = "configuration"
-    KEYCHAIN = "keychain"
+    KEYRING = "keyring"
     SYSTEM_TLS = "system_tls"
     EWS_LOGIN = "ews_login"
 
 
 class DoctorResult(BaseModel):
-    """Evidence from a complete profile, keychain, TLS and login diagnosis."""
+    """Evidence from a complete profile, keyring, TLS and login diagnosis."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
