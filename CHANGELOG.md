@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/Ccccraz/ews-cli/compare/v0.1.1...v0.2.0) (2026-09-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* :recycle: rename project to ews-cli ([#24](https://github.com/Ccccraz/ews-cli/issues/24))
+
+### Code Refactoring
+
+* :recycle: rename project to ews-cli ([#24](https://github.com/Ccccraz/ews-cli/issues/24)) ([a085444](https://github.com/Ccccraz/ews-cli/commit/a0854443e5c6f223fc0ae03b9052b3cdbafe0390))
+
 ## [0.1.1](https://github.com/Ccccraz/ews/compare/v0.1.0...v0.1.1) (2026-09-12)
 
 
