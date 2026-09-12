@@ -194,6 +194,13 @@ Exchange 的 conversation 就是这里所说的 thread：`ConversationId` 是会
 - 测试分三层：单元测试覆盖 Pydantic 模型、TOML 配置、分页、过滤、错误映射、正文输入和附件路径冲突；CLI 契约测试用 fake gateway 验证每个命令的 JSON schema、退出码和 stdout/stderr 隔离；适配器测试用受控的第三方对象替身验证 EWS 字段映射（含联系人 label 与索引字段）、异常转换、附件流式保存和文件夹分类。
 - 覆盖联系人缓存、搜索、文件夹 kind 过滤与 v4 重建；schema 升级、联系人变更事务和联系人读取都有独立用例。
 
+## 发布与版本
+
+- 发行名（PyPI distribution）为 `taskseed-ews`，导入包名与命令名仍为 `ews`；`uv_build` 通过 `[tool.uv.build-backend] module-name = "ews"` 显式指定导入包，使发行名与包名解耦。运行时版本经 `importlib.metadata.version("taskseed-ews")` 读取。
+- 版本号、`CHANGELOG.md` 与 GitHub Release 由 release-please 管理：`main` 上的 conventional commits 驱动 release PR，合并后自动打 `vX.Y.Z` tag 并创建 Release。0.x 阶段启用 `bump-minor-pre-major` 与 `bump-patch-for-minor-pre-major`，`feat`/`fix` 只升 patch。
+- 发布与 release-please 在同一个 workflow（`.github/workflows/publish.yml`）：`release-please` job 输出 `release_created`，`pypi` job 据此用 `uv build` + `uv publish` 经 PyPI Trusted Publishing（environment `pypi`，`id-token: write`）发布，不保存任何 token。放在同一 workflow 是为了绕开 `GITHUB_TOKEN` 不触发其它 workflow 的限制。
+- `uv.lock` 中的自身版本不随发布同步（release-please 只改 `pyproject.toml` 与 `CHANGELOG.md`），不影响依赖解析；因此常规 CI 使用 `uv sync` 而不加 `--locked`。CI 在普通 PR 与 `main` 上运行 Ruff、Pyright 与 pytest，release PR 不触发 CI。
+
 ## 兼容性与验收
 
 - 真实 EWS 验收无法在普通 CI 中运行，必须在企业网络内用真实邮箱手工执行：先用 `doctor` 记录 Exchange build/version 并验证 TLS、系统 keyring 和 NTLM，再验证文件夹遍历、分页与全部过滤器，然后发送唯一主题邮件并验证 list/get/正文/Internet headers；分别保存新邮件、reply 与 reply-all 草稿，确认 Drafts 中存在且没有发信，再执行 `sync` 验证 `is_draft=true`；用预置带附件邮件验证元数据与文件保存，最后验证 mark-read、reply、reply-all 和 move。

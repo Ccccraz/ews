@@ -35,7 +35,13 @@
 作为工具安装（推荐日常使用）：
 
 ```nu
-uv tool install git+https://github.com/Ccccraz/ews
+uv tool install taskseed-ews
+```
+
+也可以固定到某个发布 tag（把 `vX.Y.Z` 换成实际版本）：
+
+```nu
+uv tool install git+https://github.com/Ccccraz/ews@vX.Y.Z
 ```
 
 从源码安装（开发或想改代码）：
