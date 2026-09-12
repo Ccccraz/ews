@@ -64,14 +64,18 @@ def test_legacy_positional_test_user_is_not_supported(capsys: CaptureFixture[str
     assert "Unused Tokens" in captured.err
 
 
-def test_log_level_selects_the_stderr_diagnostic_level(
-    capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
-) -> None:
+def _use_stub_service(monkeypatch: MonkeyPatch) -> None:
     def build_context(user: str | None) -> CommandContext:
         service = cast(MailboxApplicationService, StubService())
         return CommandContext(user=user, service=service)
 
     monkeypatch.setattr("ews.cli._build_context", build_context)
+
+
+def test_log_level_selects_the_stderr_diagnostic_level(
+    capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
+) -> None:
+    _use_stub_service(monkeypatch)
 
     with pytest.raises(SystemExit) as exit_info:
         app(["--user", "AGENT@EXAMPLE.COM", "--log-level", "DEBUG", "folder", "list"])
@@ -80,17 +84,15 @@ def test_log_level_selects_the_stderr_diagnostic_level(
     assert exit_info.value.code == 0
     output = cast(dict[str, JsonValue], json.loads(captured.out))
     assert output["ok"] is True
-    assert "stub exchange call" in captured.err
+    (event,) = [cast(dict[str, JsonValue], json.loads(line)) for line in captured.err.splitlines()]
+    assert event["event"] == "stub exchange call"
+    assert event["logger"] == "exchangelib"
 
 
 def test_log_level_hides_diagnostics_by_default(
     capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
 ) -> None:
-    def build_context(user: str | None) -> CommandContext:
-        service = cast(MailboxApplicationService, StubService())
-        return CommandContext(user=user, service=service)
-
-    monkeypatch.setattr("ews.cli._build_context", build_context)
+    _use_stub_service(monkeypatch)
 
     with pytest.raises(SystemExit) as exit_info:
         app(["--user", "AGENT@EXAMPLE.COM", "folder", "list"])
@@ -107,4 +109,40 @@ def test_log_level_rejects_unknown_values(capsys: CaptureFixture[str]) -> None:
     captured = capsys.readouterr()
     assert exit_info.value.code == 1
     assert "LOUD" in captured.err
+    assert captured.out == ""
+
+
+def test_log_format_console_renders_human_readable_diagnostics(
+    capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
+) -> None:
+    _use_stub_service(monkeypatch)
+
+    with pytest.raises(SystemExit) as exit_info:
+        app(
+            [
+                "--user",
+                "AGENT@EXAMPLE.COM",
+                "--log-level",
+                "DEBUG",
+                "--log-format",
+                "console",
+                "folder",
+                "list",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exit_info.value.code == 0
+    assert "stub exchange call" in captured.err
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(captured.err)
+
+
+def test_log_format_rejects_unknown_values(capsys: CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        app(["--log-format", "yaml", "folder", "list"])
+
+    captured = capsys.readouterr()
+    assert exit_info.value.code == 1
+    assert "yaml" in captured.err
     assert captured.out == ""
