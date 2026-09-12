@@ -11,6 +11,7 @@ from ews.application import (
     InvalidFolderError,
     MailboxApplicationService,
     MessageNotFoundError,
+    ProfileApplicationService,
     UnsupportedAttachmentError,
     UserNotFoundError,
 )
@@ -36,6 +37,13 @@ class CommandContext:
 
     user: str | None
     service: MailboxApplicationService
+    profiles: ProfileApplicationService | None = None
+
+    @property
+    def profile_service(self) -> ProfileApplicationService:
+        if self.profiles is None:
+            raise RuntimeError("Profile service is not configured")
+        return self.profiles
 
 
 def run_read[ResultT: BaseModel](
@@ -48,11 +56,11 @@ def run_read[ResultT: BaseModel](
         result = operation(context.user)
     except (ValidationError, InvalidFolderError) as error:
         return fail("invalid_argument", str(error), 2)
-    except (ProfileNotFoundError, InvalidProfileError, OSError) as error:
+    except (InvalidProfileError, OSError) as error:
         return fail("configuration_error", str(error), 2)
     except (PasswordNotFoundError, PasswordStoreError, EwsAuthenticationError) as error:
         return fail("authentication_error", str(error), 3)
-    except UserNotFoundError as error:
+    except (ProfileNotFoundError, UserNotFoundError) as error:
         return fail("profile_not_found", str(error), 4)
     except MailboxCacheNotReadyError:
         return fail(
@@ -88,11 +96,11 @@ def run_write[ResultT: BaseModel](
         return fail("invalid_argument", str(error), 2)
     except DestinationExistsError as error:
         return fail("destination_exists", str(error), 2)
-    except (ProfileNotFoundError, InvalidProfileError, OSError) as error:
+    except (InvalidProfileError, OSError) as error:
         return fail("configuration_error", str(error), 2)
     except (PasswordNotFoundError, PasswordStoreError, EwsAuthenticationError) as error:
         return fail("authentication_error", str(error), 3)
-    except UserNotFoundError as error:
+    except (ProfileNotFoundError, UserNotFoundError) as error:
         return fail("profile_not_found", str(error), 4)
     except MailboxCacheNotReadyError:
         return fail(

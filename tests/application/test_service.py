@@ -214,7 +214,7 @@ def test_service_diagnoses_profile_keychain_tls_and_login(
     tls_probe = FakeTlsProbe()
     service = _service(tmp_path, monkeypatch, FakeGateway(), tls_probe)
 
-    result = service.diagnose()
+    result = service.diagnose("agent@example.com")
 
     assert result.profile_path == tmp_path / "profile.toml"
     assert str(result.endpoint) == "https://mail.example.com/EWS/Exchange.asmx"

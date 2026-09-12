@@ -1,11 +1,14 @@
 import getpass
 import sys
 from pathlib import Path
+from typing import Annotated
 
+from cyclopts import Parameter
 from pydantic import ValidationError
 from pydantic.types import SecretStr
 
-from ews.config import PasswordStore, PasswordStoreError, ProfileStore
+from ews.commands.context import CommandContext
+from ews.config import InvalidProfileError, PasswordStoreError
 from ews.contracts import ContractModel, Error, ErrorEnvelope, SuccessEnvelope, write_contract
 from ews.models import Profile
 
@@ -16,7 +19,7 @@ class SetProfileData(ContractModel):
     profile_path: Path
 
 
-def set_profile() -> int:
+def set_profile(*, context: Annotated[CommandContext, Parameter(parse=False, show=False)]) -> int:
     """Interactively configure the EWS login profile."""
     try:
         profile = _read_profile()
@@ -24,14 +27,12 @@ def set_profile() -> int:
     except (EOFError, ValidationError, ValueError) as error:
         return _fail("configuration_error", str(error))
 
-    profile_store = ProfileStore()
     try:
-        profile_store.save(profile)
-        PasswordStore().set(profile, password)
-    except (OSError, PasswordStoreError, ValueError) as error:
+        context.profile_service.set_profile(profile, password)
+    except (InvalidProfileError, OSError, PasswordStoreError, ValueError) as error:
         return _fail("configuration_error", str(error))
 
-    write_contract(SuccessEnvelope(data=SetProfileData(profile_path=profile_store.path)))
+    write_contract(SuccessEnvelope(data=SetProfileData(profile_path=context.profile_service.path)))
     return 0
 
 

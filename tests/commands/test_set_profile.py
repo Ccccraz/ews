@@ -52,9 +52,9 @@ def test_set_stores_profile_and_password(
     assert json.loads(captured.out) == {
         "schema_version": 1,
         "ok": True,
-        "data": {"profile_path": str(tmp_path / ".config" / "taskseed" / "ews" / "profile.toml")},
+        "data": {"profile_path": str(tmp_path / ".config" / "taskseed" / "ews" / "profiles.toml")},
     }
-    profile = ProfileStore().load()
+    profile = ProfileStore().load("agent@example.com")
     assert profile.user.mailbox == "agent@example.com"
     assert backend.passwords == {("taskseed.ews:mail.example.com", "DOMAIN\\agent"): "top-secret"}
 
@@ -76,7 +76,7 @@ def test_set_rejects_invalid_profile_before_password_prompt(
     captured = capsys.readouterr()
     assert exit_info.value.code == 2
     assert json.loads(captured.out)["error"]["code"] == "configuration_error"
-    assert not (tmp_path / ".config" / "taskseed" / "ews" / "profile.toml").exists()
+    assert not (tmp_path / ".config" / "taskseed" / "ews" / "profiles.toml").exists()
 
 
 def test_set_handles_incomplete_input(

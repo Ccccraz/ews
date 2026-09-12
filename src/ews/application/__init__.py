@@ -9,6 +9,7 @@ from ews.application.errors import (
     UnsupportedAttachmentError,
 )
 from ews.application.gateway import MailboxGateway
+from ews.application.profile_service import ProfileApplicationService
 from ews.application.progress import SyncProgressReporter
 from ews.application.service import MailboxApplicationService, UserNotFoundError
 from ews.application.tls import TlsProbe
@@ -22,6 +23,7 @@ __all__ = [
     "InvalidSyncStateError",
     "MailboxApplicationService",
     "MailboxGateway",
+    "ProfileApplicationService",
     "SyncProgressReporter",
     "MessageNotFoundError",
     "TlsProbe",

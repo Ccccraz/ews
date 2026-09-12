@@ -1,6 +1,6 @@
 from ews.commands.attachment import save_attachment
 from ews.commands.auth import delete_password, password_status, set_password
-from ews.commands.config import show_config, show_config_path
+from ews.commands.config import delete_config, list_config, show_config, show_config_path
 from ews.commands.doctor import doctor
 from ews.commands.folder import list_folders
 from ews.commands.message import get_message, get_thread, list_messages
@@ -19,8 +19,10 @@ __all__ = [
     "get_message",
     "get_thread",
     "delete_password",
+    "delete_config",
     "doctor",
     "list_folders",
+    "list_config",
     "list_messages",
     "mark_read",
     "move_message",

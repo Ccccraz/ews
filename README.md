@@ -8,14 +8,14 @@
 
 - **机器优先的输出**：除 `--help`/`--version` 外，每次调用只在 stdout 输出一个 JSON 对象；诊断信息一律走 stderr。
 - **本地优先的读取**：`sync` 把邮件同步进本地 SQLite 缓存，读命令只读缓存，因此不受网络抖动影响。
-- **受限且显式的写入**：只提供发送、回复、标记已读、移动和附件下载；**没有任何删除能力**。
+- **受限且显式的写入**：只提供发送、回复、标记已读、移动和附件下载；**没有邮件或文件夹删除能力**。
 - **凭据安全**：密码只存 macOS Keychain，绝不进入配置文件、命令行参数、输出或日志。
 
 ## 能力
 
 | 类别 | 命令 |
 | --- | --- |
-| 配置与认证 | `set`、`config show\|path`、`auth set-password\|status\|delete-password` |
+| 配置与认证 | `set`、`config list\|show\|delete\|path`、`auth set-password\|status\|delete-password` |
 | 连通性诊断 | `test`、`doctor` |
 | 同步 | `sync`（增量，可续跑） |
 | 读取 | `folder list`、`message list`、`message get`、`message thread` |
@@ -78,9 +78,9 @@ ews --user agent message thread <message-id>
 
 | 命令 | 用途 | 需要 `--user` | 依赖缓存已就绪 |
 | --- | --- | --- | --- |
-| `set` | 交互式配置 profile | 否 | 否 |
+| `set` | 交互式新增或按 mailbox 更新 profile | 否 | 否 |
 | `test` | 一次真实 Inbox 元数据请求 | 是 | 否 |
-| `doctor` | 校验配置、Keychain、系统 TLS、NTLM | 否 | 否 |
+| `doctor` | 校验配置、Keychain、系统 TLS、NTLM | 是 | 否 |
 | `sync [--progress]` | 增量同步进本地缓存 | 是 | 否（写缓存） |
 | `folder list` | 文件夹树 + folder ID + well-known name | 是 | 是 |
 | `message list` | 结构化过滤 + 分页 | 是 | 是 |
@@ -91,8 +91,9 @@ ews --user agent message thread <message-id>
 | `message mark-read <id> [--unread]` | 标记已读 / 未读 | 是 | 是 |
 | `message move <id> --folder <id\|name>` | 移动到其他文件夹 | 是 | 是 |
 | `attachment save <mid> <aid> --path <file>` | 流式保存附件 | 是 | 是 |
-| `config show` / `path` | 查看非敏感配置 / 配置路径 | 否 | 否 |
-| `auth set-password` / `status` / `delete-password` | 管理 Keychain 中的密码 | 否 | 否 |
+| `config list` / `path` | 列出全部非敏感 profile / 查看配置路径 | 否 | 否 |
+| `config show` / `delete` | 查看 / 删除所选 profile | 是 | 否 |
+| `auth set-password` / `status` / `delete-password` | 管理所选 profile 的 Keychain 密码 | 是 | 否 |
 
 `message list` 的过滤器可任意组合（AND）：`--folder`、`--read-state read|unread|any`、`--sender`、`--subject-contains`、`--body-contains`、`--received-from`、`--received-before`，分页用 `--limit`（默认 50、最大 200）与 `--offset`。`message thread` 支持 `--limit`（默认 20、最大 200）与 `--offset`。
 
@@ -130,18 +131,30 @@ ews --user agent message thread <message-id>
 
 ## 配置与凭据
 
-非敏感配置为 TOML，固定在 `$HOME/.config/taskseed/ews/profile.toml`：
+非敏感配置为 TOML，固定在 `$HOME/.config/taskseed/ews/profiles.toml`。每个
+`[[profiles]]` 保存一个 profile；所有 mailbox 与 NTLM username 作为别名，在忽略大小写后必须唯一：
 
 ```toml
-[server]
+[[profiles]]
+[profiles.server]
 endpoint = "https://webmail.example.com/EWS/Exchange.asmx"
 
-[user]
+[profiles.user]
 mailbox = "agent@example.com"
 username = "agent"
+
+[[profiles]]
+[profiles.server]
+endpoint = "https://webmail.example.com/EWS/Exchange.asmx"
+
+[profiles.user]
+mailbox = "operator@example.com"
+username = "operator"
 ```
 
-密码单独存放于 macOS Keychain：service 为 `taskseed.ews:<endpoint-host>`，account 为 NTLM username。密码**不得**出现在 TOML、命令行参数、stdout、stderr 或日志中；`config show` 永不显示秘密。
+密码单独存放于 macOS Keychain：service 为 `taskseed.ews:<endpoint-host>`，account 为 NTLM username。密码**不得**出现在 TOML、命令行参数、stdout、stderr 或日志中；`config show` 永不显示秘密。`config delete` 先删除所选 Keychain 密码，再删除 profile；密码本来不存在也成功，Keychain 后端失败则保留 profile。SQLite 邮箱缓存始终保留。
+
+旧版 `$HOME/.config/taskseed/ews/profile.toml` 不会被读取或自动迁移。升级时，可为每个账户重新运行 `ews set`；也可手工创建上述 `profiles.toml`，把原 `[server]`、`[user]` 分别改为 `[profiles.server]`、`[profiles.user]` 并在前面加入 `[[profiles]]`。Keychain 键格式没有变化；除非 endpoint host 或 NTLM username 也发生变化，否则无需重新保存密码。
 
 ## 本地缓存与同步
 
@@ -162,7 +175,7 @@ username = "agent"
 
 ## 已知限制
 
-- 仅 macOS；单 profile、单邮箱，不支持共享邮箱与 impersonation。
+- 仅 macOS；支持多个独立邮箱 profile，但不支持共享邮箱与 impersonation，也没有默认或当前 profile。
 - 不支持 Autodiscover、自定义 CA、跳过 TLS 校验。
 - 首版不含：邮件删除、转发、草稿管理、发送附件、日历与联系人、MIME `.eml` 导出。
 - `folder list` 对没有 EWS distinguished name 的文件夹返回 `well_known_name: null`（例如自定义文件夹、主邮箱里名为 `Archive` 的文件夹），这些文件夹只能用 folder ID 选择。

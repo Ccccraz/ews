@@ -89,8 +89,8 @@ def test_test_handles_missing_profile(
 
     exit_code, output = _invoke("DOMAIN\\agent", capsys)
 
-    assert exit_code == 2
-    assert _error(output)["code"] == "configuration_error"
+    assert exit_code == 4
+    assert _error(output)["code"] == "profile_not_found"
 
 
 def test_test_handles_missing_password(

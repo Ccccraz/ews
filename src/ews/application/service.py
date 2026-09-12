@@ -13,7 +13,7 @@ from ews.application.errors import (
 from ews.application.gateway import MailboxGateway
 from ews.application.progress import SyncProgressReporter
 from ews.application.tls import TlsProbe
-from ews.config import PasswordStore, ProfileStore
+from ews.config import PasswordStore, ProfileNotFoundError, ProfileStore
 from ews.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
@@ -84,11 +84,9 @@ class MailboxApplicationService:
         password = self._password_store.get(profile)
         return self._gateway.test_access(profile, password)
 
-    def diagnose(self, selected_user: str | None = None) -> DoctorResult:
+    def diagnose(self, selected_user: str) -> DoctorResult:
         """Verify profile, keychain, system TLS and EWS login in one run."""
-        profile = self._profile_store.load()
-        if selected_user is not None:
-            _require_selected_user(profile, selected_user)
+        profile = self._load_profile(selected_user)
         password = self._password_store.get(profile)
         tls = self._tls_probe.probe(profile)
         return DoctorResult(
@@ -335,18 +333,10 @@ class MailboxApplicationService:
         return fetched
 
     def _load_profile(self, selected_user: str) -> Profile:
-        profile = self._profile_store.load()
-        _require_selected_user(profile, selected_user)
-        return profile
-
-
-def _require_selected_user(profile: Profile, selected_user: str) -> None:
-    expected = selected_user.casefold()
-    if expected not in {
-        profile.user.username.casefold(),
-        str(profile.user.mailbox).casefold(),
-    }:
-        raise UserNotFoundError(f"Profile not found for user: {selected_user}")
+        try:
+            return self._profile_store.load(selected_user)
+        except ProfileNotFoundError as error:
+            raise UserNotFoundError(str(error)) from error
 
 
 def _add_message_counts(left: MessageSyncCounts, right: MessageSyncCounts) -> MessageSyncCounts:

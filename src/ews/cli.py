@@ -7,12 +7,14 @@ from cyclopts import App, Parameter
 from truststore import inject_into_ssl
 
 from ews import __version__
-from ews.application import MailboxApplicationService
+from ews.application import MailboxApplicationService, ProfileApplicationService
 from ews.commands import (
+    delete_config,
     delete_password,
     doctor,
     get_message,
     get_thread,
+    list_config,
     list_folders,
     list_messages,
     mark_read,
@@ -67,6 +69,8 @@ message.command(mark_read, name="mark-read")
 message.command(move_message, name="move")
 attachment.command(save_attachment, name="save")
 config.command(show_config, name="show")
+config.command(list_config, name="list")
+config.command(delete_config, name="delete")
 config.command(show_config_path, name="path")
 auth.command(set_password, name="set-password")
 auth.command(password_status, name="status")
@@ -105,14 +109,17 @@ def launch(
 
 
 def _build_context(user: str | None) -> CommandContext:
+    profile_store = ProfileStore()
+    password_store = PasswordStore()
     return CommandContext(
         user=user,
         service=MailboxApplicationService(
-            ProfileStore(),
-            PasswordStore(),
+            profile_store,
+            password_store,
             EwsClient(),
             tls_probe=SystemTlsProbe(),
         ),
+        profiles=ProfileApplicationService(profile_store, password_store),
     )
 
 

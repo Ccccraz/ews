@@ -8,14 +8,14 @@ This project puts agent tooling on top of a local Exchange mailbox. It does one 
 
 - **Machine-first output**: apart from `--help`/`--version`, every invocation writes exactly one JSON object to stdout; diagnostics always go to stderr.
 - **Local-first reads**: `sync` mirrors the mailbox into a local SQLite cache, and every read command only reads that cache, so reads do not depend on a stable network.
-- **Explicit, limited writes**: send, reply, mark read, move and download attachments — and **no ability to delete anything**.
+- **Explicit, limited writes**: send, reply, mark read, move and download attachments — and **no ability to delete messages or folders**.
 - **Credential safety**: the password lives only in the macOS Keychain and never reaches configuration files, command-line arguments, output or logs.
 
 ## Capabilities
 
 | Area | Commands |
 | --- | --- |
-| Configuration and authentication | `set`, `config show\|path`, `auth set-password\|status\|delete-password` |
+| Configuration and authentication | `set`, `config list\|show\|delete\|path`, `auth set-password\|status\|delete-password` |
 | Connectivity diagnostics | `test`, `doctor` |
 | Synchronization | `sync` (incremental and resumable) |
 | Reads | `folder list`, `message list`, `message get`, `message thread` |
@@ -82,9 +82,9 @@ ews --user agent message thread <message-id>
 
 | Command | Purpose | Needs `--user` | Needs a ready cache |
 | --- | --- | --- | --- |
-| `set` | Configure the profile interactively | no | no |
+| `set` | Interactively add or update a profile by mailbox | no | no |
 | `test` | One real Inbox metadata request | yes | no |
-| `doctor` | Verify configuration, Keychain, system TLS, NTLM | no | no |
+| `doctor` | Verify configuration, Keychain, system TLS, NTLM | yes | no |
 | `sync [--progress]` | Incrementally synchronize into the local cache | yes | no (it writes the cache) |
 | `folder list` | Folder tree with folder IDs and well-known names | yes | yes |
 | `message list` | Structured filters plus pagination | yes | yes |
@@ -95,8 +95,9 @@ ews --user agent message thread <message-id>
 | `message mark-read <id> [--unread]` | Mark a message read or unread | yes | yes |
 | `message move <id> --folder <id\|name>` | Move a message to another folder | yes | yes |
 | `attachment save <mid> <aid> --path <file>` | Stream one attachment to disk | yes | yes |
-| `config show` / `path` | Show the non-secret profile or its path | no | no |
-| `auth set-password` / `status` / `delete-password` | Manage the Keychain password | no | no |
+| `config list` / `path` | List all non-secret profiles or show their path | no | no |
+| `config show` / `delete` | Show or delete the selected profile | yes | no |
+| `auth set-password` / `status` / `delete-password` | Manage the selected profile's Keychain password | yes | no |
 
 The `message list` filters combine with AND: `--folder`, `--read-state read|unread|any`, `--sender`, `--subject-contains`, `--body-contains`, `--received-from`, `--received-before`. Pagination uses `--limit` (default 50, maximum 200) and `--offset`. `message thread` accepts `--limit` (default 20, maximum 200) and `--offset`.
 
@@ -134,18 +135,31 @@ Diagnostics and logging:
 
 ## Configuration and credentials
 
-The non-secret configuration is TOML, fixed at `$HOME/.config/taskseed/ews/profile.toml`:
+The non-secret configuration is TOML, fixed at `$HOME/.config/taskseed/ews/profiles.toml`.
+Each `[[profiles]]` entry is one profile. Mailboxes and NTLM usernames are aliases that
+must be unique when compared case-insensitively:
 
 ```toml
-[server]
+[[profiles]]
+[profiles.server]
 endpoint = "https://webmail.example.com/EWS/Exchange.asmx"
 
-[user]
+[profiles.user]
 mailbox = "agent@example.com"
 username = "agent"
+
+[[profiles]]
+[profiles.server]
+endpoint = "https://webmail.example.com/EWS/Exchange.asmx"
+
+[profiles.user]
+mailbox = "operator@example.com"
+username = "operator"
 ```
 
-The password is stored separately in the macOS Keychain: service `taskseed.ews:<endpoint-host>`, account = NTLM username. The password must **never** appear in the TOML file, command-line arguments, stdout, stderr or logs, and `config show` never reveals secrets.
+The password is stored separately in the macOS Keychain: service `taskseed.ews:<endpoint-host>`, account = NTLM username. The password must **never** appear in the TOML file, command-line arguments, stdout, stderr or logs, and `config show` never reveals secrets. `config delete` deletes the selected Keychain password before deleting the profile; an already absent password is successful, while a Keychain backend failure preserves the profile. SQLite mailbox caches are always retained.
+
+The old `$HOME/.config/taskseed/ews/profile.toml` is neither read nor migrated automatically. To upgrade, run `ews set` again for every account, or create `profiles.toml` manually: add `[[profiles]]` and rename the old `[server]` and `[user]` tables to `[profiles.server]` and `[profiles.user]`. The Keychain key format is unchanged, so passwords need not be saved again unless the endpoint host or NTLM username also changes.
 
 ## Local cache and synchronization
 
@@ -166,7 +180,7 @@ The password is stored separately in the macOS Keychain: service `taskseed.ews:<
 
 ## Known limitations
 
-- macOS only; a single profile and a single mailbox, with no shared mailboxes or impersonation.
+- macOS only; multiple independent mailbox profiles are supported, but shared mailboxes, impersonation, and a default/current profile are not.
 - No Autodiscover, no custom CA files, no way to skip TLS verification.
 - Not in this first version: deleting, forwarding, drafts, sending attachments, calendar and contacts, MIME `.eml` export.
 - `folder list` returns `well_known_name: null` for folders without an EWS distinguished name (custom folders, or the main-mailbox folder literally named `Archive`); those can only be selected by folder ID.

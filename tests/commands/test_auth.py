@@ -48,16 +48,26 @@ def test_auth_set_password_loads_profile_before_prompting(
 
     exit_code, output, stderr = _invoke(capsys)
 
-    assert exit_code == 2
+    assert exit_code == 4
     assert stderr == ""
-    assert _error(output)["code"] == "configuration_error"
+    assert _error(output)["code"] == "profile_not_found"
+
+
+@pytest.mark.parametrize("command", ["set-password", "status", "delete-password"])
+def test_auth_commands_require_user(command: str, capsys: CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        app(["auth", command])
+
+    output = cast(dict[str, JsonValue], json.loads(capsys.readouterr().out))
+    assert exit_info.value.code == 2
+    assert _error(output)["code"] == "invalid_argument"
 
 
 def test_auth_set_password_handles_invalid_profile(
     tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    profile_path = tmp_path / ".config" / "taskseed" / "ews" / "profile.toml"
+    profile_path = tmp_path / ".config" / "taskseed" / "ews" / "profiles.toml"
     profile_path.parent.mkdir(parents=True)
     profile_path.write_text("not valid toml", encoding="utf-8")
     monkeypatch.setattr(getpass, "getpass", _unexpected_password_prompt)
@@ -134,9 +144,9 @@ def test_auth_status_handles_missing_profile(
 
     exit_code, output, stderr = _invoke(capsys, command="status")
 
-    assert exit_code == 2
+    assert exit_code == 4
     assert stderr == ""
-    assert _error(output)["code"] == "configuration_error"
+    assert _error(output)["code"] == "profile_not_found"
 
 
 def test_auth_status_handles_keyring_failure(
@@ -182,9 +192,9 @@ def test_auth_delete_password_handles_missing_profile(
 
     exit_code, output, stderr = _invoke(capsys, command="delete-password")
 
-    assert exit_code == 2
+    assert exit_code == 4
     assert stderr == ""
-    assert _error(output)["code"] == "configuration_error"
+    assert _error(output)["code"] == "profile_not_found"
 
 
 def test_auth_delete_password_handles_missing_password(
@@ -195,9 +205,9 @@ def test_auth_delete_password_handles_missing_password(
 
     exit_code, output, stderr = _invoke(capsys, command="delete-password")
 
-    assert exit_code == 3
+    assert exit_code == 0
     assert stderr == ""
-    assert _error(output)["code"] == "authentication_error"
+    assert output["data"] == {"username": "DOMAIN\\agent"}
 
 
 def test_auth_delete_password_handles_keyring_failure(
@@ -229,7 +239,7 @@ def _invoke(
     capsys: CaptureFixture[str], *, command: str = "set-password"
 ) -> tuple[int, dict[str, JsonValue], str]:
     with pytest.raises(SystemExit) as exit_info:
-        app(["auth", command])
+        app(["--user", "agent@example.com", "auth", command])
 
     captured = capsys.readouterr()
     assert isinstance(exit_info.value.code, int)

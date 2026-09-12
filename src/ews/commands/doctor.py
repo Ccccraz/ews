@@ -18,11 +18,13 @@ from ews.system import TlsProbeError
 
 def doctor(*, context: Annotated[CommandContext, Parameter(parse=False, show=False)]) -> int:
     """Verify configuration, keychain, system TLS and EWS login."""
+    if context.user is None:
+        return fail("invalid_argument", "--user is required", 2)
     try:
         result = context.service.diagnose(context.user)
-    except (ProfileNotFoundError, InvalidProfileError, OSError) as error:
+    except (InvalidProfileError, OSError) as error:
         return _fail(DoctorCheck.CONFIGURATION, "configuration_error", str(error), 2)
-    except UserNotFoundError as error:
+    except (ProfileNotFoundError, UserNotFoundError) as error:
         return _fail(DoctorCheck.CONFIGURATION, "profile_not_found", str(error), 4)
     except (PasswordNotFoundError, PasswordStoreError) as error:
         return _fail(DoctorCheck.KEYCHAIN, "authentication_error", str(error), 3)

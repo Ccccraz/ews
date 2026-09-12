@@ -33,10 +33,11 @@ CLI -> Application Service -> MailboxGateway Protocol -> Exchangelib Adapter
 ## 连接、凭据与配置
 
 - 使用 exchangelib，不自行维护 EWS SOAP、WSDL 或 XML 映射；目标是本地 Exchange，使用 NTLM 与 HTTPS（[Microsoft 的认证说明](https://learn.microsoft.com/en-us/exchange/client-developer/exchange-web-services/authentication-and-ews-in-exchange)）。
-- 使用显式 EWS endpoint 并关闭 Autodiscover；一个配置只对应一个邮箱，使用 delegate access，不支持共享邮箱或 impersonation。
+- 使用显式 EWS endpoint 并关闭 Autodiscover；每个 profile 只对应一个邮箱，使用 delegate access，不支持共享邮箱或 impersonation。
 - TLS 必须启用证书校验，并通过 Truststore 使用 macOS 系统信任库；不支持自定义 CA 或跳过校验。
-- 非敏感配置（endpoint、mailbox SMTP address、NTLM username）使用 TOML 存放在 `$HOME/.config/taskseed/ews/`，固定文件 `profile.toml`，标准库 `tomllib` 读取、Tomli-W 写入。
+- 非敏感配置（endpoint、mailbox SMTP address、NTLM username）使用 TOML 存放在 `$HOME/.config/taskseed/ews/profiles.toml` 的 `[[profiles]]` 数组中，标准库 `tomllib` 读取、Tomli-W 写入，并通过同目录临时文件原子替换。mailbox、username 及交叉别名忽略大小写后唯一；mailbox 是新增或更新时的稳定身份。
 - 密码只存 macOS Keychain（service 为 `taskseed.ews:<endpoint-host>`，account 为 NTLM username），应用内使用 Pydantic `SecretStr`；密码不得出现在 TOML、命令行参数、stdout、stderr 或日志中。
+- 旧 `profile.toml` 不读取也不自动迁移。升级时对每个账户重新执行 `ews set`，或手工把旧 `[server]`/`[user]` 包装为 `profiles.toml` 中的 `[[profiles]]`、`[profiles.server]`/`[profiles.user]`。Keychain 键格式不变。
 - 不支持无桌面 Linux、环境变量密码回退和文件型 Keyring。
 
 ## 本地缓存
@@ -64,34 +65,35 @@ CLI -> Application Service -> MailboxGateway Protocol -> Exchangelib Adapter
 ### 命令与全局选项
 
 ```text
-ews set | doctor
-ews config show|path
-ews auth set-password|status|delete-password
-ews [--user U] test
-ews [--user U] sync [--progress]
-ews [--user U] folder list
-ews [--user U] message list [--folder F] [--read-state S] [--sender A] [--subject-contains T]
+ews set
+ews config list|path
+ews --user U config show|delete
+ews --user U auth set-password|status|delete-password
+ews --user U doctor|test
+ews --user U sync [--progress]
+ews --user U folder list
+ews --user U message list [--folder F] [--read-state S] [--sender A] [--subject-contains T]
                             [--body-contains T] [--received-from D] [--received-before D]
                             [--limit N] [--offset N]
-ews [--user U] message get    <message-id>
-ews [--user U] message thread <message-id> [--limit N] [--offset N]
-ews [--user U] message send      --to <addr>... [--cc <addr>...] [--bcc <addr>...]
+ews --user U message get    <message-id>
+ews --user U message thread <message-id> [--limit N] [--offset N]
+ews --user U message send      --to <addr>... [--cc <addr>...] [--bcc <addr>...]
                                  [--subject <text>] --body-file <path|-> [--content-type text|html]
-ews [--user U] message reply     <message-id> --body-file <path|-> [--subject <text>]
+ews --user U message reply     <message-id> --body-file <path|-> [--subject <text>]
                                  [--content-type text|html]
-ews [--user U] message reply-all <message-id> --body-file <path|-> [--subject <text>]
+ews --user U message reply-all <message-id> --body-file <path|-> [--subject <text>]
                                  [--content-type text|html]
-ews [--user U] message mark-read <message-id> [--unread]
-ews [--user U] message move      <message-id> --folder <folder-id|well-known-name>
-ews [--user U] attachment save   <message-id> <attachment-id> --path <file>
+ews --user U message mark-read <message-id> [--unread]
+ews --user U message move      <message-id> --folder <folder-id|well-known-name>
+ews --user U attachment save   <message-id> <attachment-id> --path <file>
 ```
 
-- `--user` 是全局选项，使用 NTLM username 或 mailbox 地址选择当前固定 profile，匹配时忽略大小写。
+- `--user` 是全局选项，使用 NTLM username 或 mailbox 地址选择唯一 profile，匹配时忽略大小写。所有需要邮箱身份的命令都必须提供它；没有默认或当前 profile。
 - `--log-level` 是全局选项，取值 `error`、`warning`、`info` 或 `debug`（大小写不敏感，默认 `warning`），只调整 stderr 诊断的详细程度；`--log-format` 取值 `json`（默认）或 `console`，决定诊断是结构化 JSON 行还是人类可读输出，`console` 只在 stderr 是终端且未设置 `NO_COLOR` 时着色。
 - `--body-file` 只接受显式路径，`-` 表示 stdin（因此该参数启用 `allow_leading_hyphen`）。写命令不回显正文、不输出进度、不做交互确认：调用显式写命令即表示授权执行。
 - 收件人在 CLI 层是 `list[str]`，"至少一个收件人"由模型保证，地址用 `EmailStr(check_deliverability=False)` 校验（不触发 DNS）；这类失败与其他参数错误一样是 JSON + 退出码 2。
 - `--subject` 在 `send` 中默认为空串，在 `reply`/`reply-all` 中省略表示使用标准回复主题；`mark-read` 默认置为已读，`--unread` 置为未读。
-- `set` 与 `auth set-password` 只接受无回显的交互输入（不接受密码参数），密码写入 Keychain；`config show` 不显示秘密，`config path` 返回实际配置路径；`doctor` 做完整诊断并返回 Exchange build/version，`test` 只做一次真实 Inbox 元数据请求。
+- `set` 与 `auth set-password` 只接受无回显的交互输入（不接受密码参数），密码写入 Keychain；`config list` 返回按 mailbox 排序的全部 profile，`config show` 不显示秘密，`config path` 返回实际配置路径。`config delete` 先删除 Keychain 项再删除 profile，密码缺失视为成功，Keychain 后端失败时保留 profile，且永不删除 SQLite 缓存。`doctor` 做完整诊断并返回 Exchange build/version，`test` 只做一次真实 Inbox 元数据请求。
 
 ### JSON 输出与退出码
 
@@ -108,10 +110,10 @@ ews [--user U] attachment save   <message-id> <attachment-id> --path <file>
 | CLI 顶层捕获到的未预期异常（含构建上下文时的异常） | `internal_error` | 1 | false |
 | 参数非法（收件人缺失或地址非法、正文文件不可读）、EWS 拒绝请求（非法收件人、超出大小限制）、附件目标路径不可用、`kind="item"` 附件 | `invalid_argument` | 2 | false |
 | 附件目标文件已存在 | `destination_exists` | 2 | false |
-| profile 缺失或损坏、本地 I/O 失败 | `configuration_error` | 2 | false |
+| profiles TOML 损坏、身份冲突或本地 I/O 失败 | `configuration_error` | 2 | false |
 | 缓存读写失败 | `cache_error` | 2 | false |
 | Keychain 无密码或失败、NTLM 被拒、SendAs 被拒 | `authentication_error` | 3 | false |
-| `--user` 与 profile 不匹配 | `profile_not_found` | 4 | false |
+| `--user` 选择不到 profile（含配置文件不存在或为空） | `profile_not_found` | 4 | false |
 | 缓存未 ready | `cache_not_ready` | 4 | false |
 | 消息、文件夹或附件不存在 | `resource_not_found` | 4 | false |
 | 其他 EWS 或传输失败（含 change key 失效） | `service_error` | 5 | true |
@@ -173,7 +175,7 @@ Exchange 的 conversation 就是这里所说的 thread：`ConversationId` 是会
 
 - 邮件删除、转发和草稿管理；发送附件或以"新邮件"方式实现带附件的回复；附件上传。
 - 日历和联系人；MIME `.eml` 导出（含内嵌邮件附件的导出）。
-- 多 profile、多邮箱、共享邮箱和 impersonation；Autodiscover；OAuth、Kerberos/GSSAPI 和 Basic Auth。
+- 共享邮箱和 impersonation；默认/当前 profile；Autodiscover；OAuth、Kerberos/GSSAPI 和 Basic Auth。
 - 自定义 CA、禁用 TLS 校验；无桌面 Linux 与 Windows 客户端。
 - 长驻进程、JSONL 协议和异步执行。
 - 显示名形式的收件人（`Name <addr>`）、回复时覆盖收件人、写后自动同步。
