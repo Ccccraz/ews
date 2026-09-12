@@ -19,7 +19,7 @@ from ews.models.mailbox import (
     ReadState,
 )
 from ews.models.outgoing import OutgoingMessage, OutgoingReply
-from ews.models.profile import Profile
+from ews.models.profile import Profile, Profiles
 from ews.models.server import Server
 from ews.models.sync import (
     FolderChange,
@@ -73,6 +73,7 @@ __all__ = [
     "OutgoingReply",
     "Pagination",
     "Profile",
+    "Profiles",
     "ReadState",
     "Server",
     "ThreadMessage",

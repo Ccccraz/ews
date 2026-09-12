@@ -558,8 +558,8 @@ def test_write_commands_handle_a_missing_profile(
 
     exit_code, output = _invoke(["--user", MAILBOX, "message", "mark-read", "message-id"], capsys)
 
-    assert exit_code == 2
-    assert _error(output)["code"] == "configuration_error"
+    assert exit_code == 4
+    assert _error(output)["code"] == "profile_not_found"
 
 
 def test_write_commands_report_a_broken_cache(

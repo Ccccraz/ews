@@ -15,7 +15,7 @@ from ews.exchange import EwsAuthenticationError, EwsServiceError
 from ews.models import ConnectionTestResult, Profile, TlsCheckResult
 from ews.system import TlsProbeError
 
-PROFILE_PATH = Path(".config") / "taskseed" / "ews" / "profile.toml"
+PROFILE_PATH = Path(".config") / "taskseed" / "ews" / "profiles.toml"
 
 
 class SuccessfulClient:
@@ -79,7 +79,7 @@ def test_doctor_reports_a_complete_diagnosis(
     _configure(tmp_path, monkeypatch)
     _set_dependencies(monkeypatch, SuccessfulClient, SuccessfulTlsProbe)
 
-    exit_code, output = _invoke(capsys, "doctor")
+    exit_code, output = _invoke(capsys, "--user", "agent@example.com", "doctor")
 
     assert exit_code == 0
     assert output == {
@@ -106,6 +106,13 @@ def test_doctor_reports_a_complete_diagnosis(
         },
     }
     assert "top-secret" not in json.dumps(output)
+
+
+def test_doctor_requires_user(capsys: CaptureFixture[str]) -> None:
+    exit_code, output = _invoke(capsys, "doctor")
+
+    assert exit_code == 2
+    assert _error(output)["code"] == "invalid_argument"
 
 
 def test_doctor_accepts_the_configured_user_case_insensitively(
@@ -137,10 +144,10 @@ def test_doctor_handles_missing_profile(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    exit_code, output = _invoke(capsys, "doctor")
+    exit_code, output = _invoke(capsys, "--user", "agent@example.com", "doctor")
 
-    assert exit_code == 2
-    assert _error(output)["code"] == "configuration_error"
+    assert exit_code == 4
+    assert _error(output)["code"] == "profile_not_found"
     assert _check(output) == "configuration"
 
 
@@ -152,7 +159,7 @@ def test_doctor_handles_invalid_profile(
     profile_path.parent.mkdir(parents=True)
     profile_path.write_text("not valid toml", encoding="utf-8")
 
-    exit_code, output = _invoke(capsys, "doctor")
+    exit_code, output = _invoke(capsys, "--user", "agent@example.com", "doctor")
 
     assert exit_code == 2
     assert _error(output)["code"] == "configuration_error"
@@ -165,7 +172,7 @@ def test_doctor_handles_missing_password_before_verifying_tls(
     _configure(tmp_path, monkeypatch, password=None)
     _set_dependencies(monkeypatch, UnexpectedClient, UnexpectedTlsProbe)
 
-    exit_code, output = _invoke(capsys, "doctor")
+    exit_code, output = _invoke(capsys, "--user", "agent@example.com", "doctor")
 
     assert exit_code == 3
     assert _error(output)["code"] == "authentication_error"
@@ -179,7 +186,7 @@ def test_doctor_handles_keyring_failure(
     _set_dependencies(monkeypatch, UnexpectedClient, UnexpectedTlsProbe)
     monkeypatch.setattr(keyring, "get_password", _failing_password_read)
 
-    exit_code, output = _invoke(capsys, "doctor")
+    exit_code, output = _invoke(capsys, "--user", "agent@example.com", "doctor")
 
     assert exit_code == 3
     assert _error(output)["code"] == "authentication_error"
@@ -192,7 +199,7 @@ def test_doctor_handles_tls_failure_before_logging_in(
     _configure(tmp_path, monkeypatch)
     _set_dependencies(monkeypatch, UnexpectedClient, FailingTlsProbe)
 
-    exit_code, output = _invoke(capsys, "doctor")
+    exit_code, output = _invoke(capsys, "--user", "agent@example.com", "doctor")
 
     assert exit_code == 5
     assert _error(output)["code"] == "tls_error"
@@ -219,7 +226,7 @@ def test_doctor_maps_ews_failures(
     _configure(tmp_path, monkeypatch)
     _set_dependencies(monkeypatch, client_type, SuccessfulTlsProbe)
 
-    exit_code, output = _invoke(capsys, "doctor")
+    exit_code, output = _invoke(capsys, "--user", "agent@example.com", "doctor")
 
     assert exit_code == expected_exit
     assert _error(output)["code"] == expected_code
