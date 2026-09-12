@@ -8,6 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local working notes: progress checklists and one-off acceptance logs are not
+# part of the published project; the durable decisions live in docs/adr/.
+todo.md
 # Created by https://www.toptal.com/developers/gitignore/api/python
 # Edit at https://www.toptal.com/developers/gitignore?templates=python
 
