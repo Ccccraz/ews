@@ -8,6 +8,7 @@ from truststore import inject_into_ssl
 from ews import __version__
 from ews.application import MailboxApplicationService
 from ews.commands import (
+    delete_password,
     get_message,
     list_folders,
     list_messages,
@@ -47,6 +48,7 @@ config.command(show_config, name="show")
 config.command(show_config_path, name="path")
 auth.command(set_password, name="set-password")
 auth.command(password_status, name="status")
+auth.command(delete_password, name="delete-password")
 
 app = commands.meta
 app.help = commands.help

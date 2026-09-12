@@ -28,6 +28,12 @@ class AuthStatusData(ContractModel):
     password_set: bool
 
 
+class DeletePasswordData(ContractModel):
+    """Result of deleting a profile password."""
+
+    username: str
+
+
 def set_password() -> int:
     """Interactively update the configured profile password."""
     try:
@@ -67,4 +73,20 @@ def password_status() -> int:
             data=AuthStatusData(username=profile.user.username, password_set=password_set)
         )
     )
+    return 0
+
+
+def delete_password() -> int:
+    """Delete the configured profile password."""
+    try:
+        profile = ProfileStore().load()
+    except (ProfileNotFoundError, InvalidProfileError, OSError) as error:
+        return fail("configuration_error", str(error), 2)
+
+    try:
+        PasswordStore().delete(profile)
+    except (PasswordNotFoundError, PasswordStoreError) as error:
+        return fail("authentication_error", str(error), 3)
+
+    write_contract(SuccessEnvelope(data=DeletePasswordData(username=profile.user.username)))
     return 0
