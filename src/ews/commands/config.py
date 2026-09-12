@@ -52,7 +52,7 @@ def show_config(*, context: Annotated[CommandContext, Parameter(parse=False, sho
 
 
 def delete_config(*, context: Annotated[CommandContext, Parameter(parse=False, show=False)]) -> int:
-    """Delete one profile and its Keychain password, preserving mailbox cache."""
+    """Delete one profile and its system keyring password, preserving mailbox cache."""
     if context.user is None:
         return fail("invalid_argument", "--user is required", 2)
     try:

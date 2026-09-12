@@ -10,7 +10,7 @@ from ews.models import DoctorCheck, DoctorResult
 def test_doctor_check_names_are_stable() -> None:
     assert [check.value for check in DoctorCheck] == [
         "configuration",
-        "keychain",
+        "keyring",
         "system_tls",
         "ews_login",
     ]

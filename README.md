@@ -9,7 +9,7 @@
 - **机器优先的输出**：除 `--help`/`--version` 外，每次调用只在 stdout 输出一个 JSON 对象；诊断信息一律走 stderr。
 - **本地优先的读取**：`sync` 把邮件同步进本地 SQLite 缓存，读命令只读缓存，因此不受网络抖动影响。
 - **受限且显式的写入**：只提供发送、保存草稿、回复、标记已读、移动和附件下载；**没有邮件或文件夹删除能力**。
-- **凭据安全**：密码只存 macOS Keychain，绝不进入配置文件、命令行参数、输出或日志。
+- **凭据安全**：密码只存系统 keyring，绝不进入配置文件、命令行参数、输出或日志。
 
 ## 能力
 
@@ -25,7 +25,7 @@
 
 ## 环境要求
 
-- **macOS**：依赖系统 Keychain 与系统信任库（Truststore）做 TLS 校验。
+- **macOS / Windows / Linux（桌面）**：凭据存系统 keyring——macOS 用 Keychain、Windows 用 Credential Manager、Linux 用桌面会话的 Secret Service（GNOME Keyring/KWallet，需要 D-Bus；不支持无桌面/SSH/容器）。TLS 通过 Truststore 使用操作系统信任库。
 - **Python ≥ 3.14** 与 **uv**。
 - 企业网络内可达的 EWS endpoint（HTTPS + NTLM），且使用显式 endpoint（不使用 Autodiscover）。
 - 已在一个 **Microsoft Exchange Server 2019** 邮箱上完成完整验收；其他服务器版本尚未声明兼容性。
@@ -50,10 +50,10 @@ uv run ews --help
 ## 快速开始
 
 ```nu
-# 1. 交互式写入非敏感配置；密码无回显地存入 macOS Keychain
+# 1. 交互式写入非敏感配置；密码无回显地存入系统 keyring
 ews set
 
-# 2. 验证配置、Keychain、系统 TLS 与 NTLM 登录，并返回服务器版本
+# 2. 验证配置、系统 keyring、系统 TLS 与 NTLM 登录，并返回服务器版本
 ews --user agent test
 
 # 3. 首次同步（全量，数千封邮件约 1–2 分钟）；之后每次都是增量
@@ -84,7 +84,7 @@ ews --user agent message thread <message-id>
 | --- | --- | --- | --- |
 | `set` | 交互式新增或按 mailbox 更新 profile | 否 | 否 |
 | `test` | 一次真实 Inbox 元数据请求 | 是 | 否 |
-| `doctor` | 校验配置、Keychain、系统 TLS、NTLM | 是 | 否 |
+| `doctor` | 校验配置、系统 keyring、系统 TLS、NTLM | 是 | 否 |
 | `sync [--progress]` | 增量同步进本地缓存（邮件 + 个人联系人） | 是 | 否（写缓存） |
 | `folder list` | 文件夹树 + folder ID + well-known name | 是 | 是 |
 | `contact list` | 联系人列表（文件夹/文本过滤 + 分页） | 是 | 是 |
@@ -102,7 +102,7 @@ ews --user agent message thread <message-id>
 | `attachment save <mid> <aid> --path <file>` | 流式保存附件 | 是 | 是 |
 | `config list` / `path` | 列出全部非敏感 profile / 查看配置路径 | 否 | 否 |
 | `config show` / `delete` | 查看 / 删除所选 profile | 是 | 否 |
-| `auth set-password` / `status` / `delete-password` | 管理所选 profile 的 Keychain 密码 | 是 | 否 |
+| `auth set-password` / `status` / `delete-password` | 管理所选 profile 的系统 keyring 密码 | 是 | 否 |
 
 `message list` 的过滤器可任意组合（AND）：`--folder`、`--read-state read|unread|any`、`--sender`、`--subject-contains`、`--body-contains`、`--received-from`、`--received-before`，分页用 `--limit`（默认 50、最大 200）与 `--offset`。`message thread` 支持 `--limit`（默认 20、最大 200）与 `--offset`。
 
@@ -144,7 +144,7 @@ ews --user agent message thread <message-id>
 
 ## 配置与凭据
 
-非敏感配置为 TOML，固定在 `$HOME/.config/taskseed/ews/profiles.toml`。每个
+非敏感配置为 TOML，固定在 `$HOME/.config/taskseed/ews/profiles.toml`（`$HOME` 即 Python `Path.home()`，各平台路径规则统一）。每个
 `[[profiles]]` 保存一个 profile；所有 mailbox 与 NTLM username 作为别名，在忽略大小写后必须唯一：
 
 ```toml
@@ -165,9 +165,9 @@ mailbox = "operator@example.com"
 username = "operator"
 ```
 
-密码单独存放于 macOS Keychain：service 为 `taskseed.ews:<endpoint-host>`，account 为 NTLM username。密码**不得**出现在 TOML、命令行参数、stdout、stderr 或日志中；`config show` 永不显示秘密。`config delete` 先删除所选 Keychain 密码，再删除 profile；密码本来不存在也成功，Keychain 后端失败则保留 profile。SQLite 邮箱缓存始终保留。
+密码单独存放于系统 keyring：service 为 `taskseed.ews:<endpoint-host>`，account 为 NTLM username。密码**不得**出现在 TOML、命令行参数、stdout、stderr 或日志中；`config show` 永不显示秘密。`config delete` 先删除所选 keyring 密码，再删除 profile；密码本来不存在也成功，keyring 后端失败则保留 profile。SQLite 邮箱缓存始终保留。
 
-旧版 `$HOME/.config/taskseed/ews/profile.toml` 不会被读取或自动迁移。升级时，可为每个账户重新运行 `ews set`；也可手工创建上述 `profiles.toml`，把原 `[server]`、`[user]` 分别改为 `[profiles.server]`、`[profiles.user]` 并在前面加入 `[[profiles]]`。Keychain 键格式没有变化；除非 endpoint host 或 NTLM username 也发生变化，否则无需重新保存密码。
+旧版 `$HOME/.config/taskseed/ews/profile.toml` 不会被读取或自动迁移。升级时，可为每个账户重新运行 `ews set`；也可手工创建上述 `profiles.toml`，把原 `[server]`、`[user]` 分别改为 `[profiles.server]`、`[profiles.user]` 并在前面加入 `[[profiles]]`。keyring 键格式没有变化；除非 endpoint host 或 NTLM username 也发生变化，否则无需重新保存密码。
 
 ## 本地缓存与同步
 
@@ -191,8 +191,8 @@ username = "operator"
 
 ## 已知限制
 
-- 仅 macOS；支持多个独立邮箱 profile，但不支持共享邮箱与 impersonation，也没有默认或当前 profile。
-- 不支持 Autodiscover、自定义 CA、跳过 TLS 校验。
+- macOS 已完成真实 EWS 验收；Windows 与 Linux（桌面）已实现但未做真实 EWS 验收。Linux 需要桌面会话的 Secret Service，不支持无桌面/SSH/容器。支持多个独立邮箱 profile，但不支持共享邮箱与 impersonation，也没有默认或当前 profile。
+- 不支持 Autodiscover、自定义 CA、跳过 TLS 校验；Linux 额外需要 OpenSSL 3.0.3+ 与系统 `ca-certificates`。
 - 首版不含：邮件删除、转发、修改/发送/删除已有草稿、草稿或发送附件、日历与任务、MIME `.eml` 导出。
 - 通讯录：个人联系人（`IPF.Contact`）只读并有本地缓存；企业通讯录（GAL）通过 `contact search` 实时查询，**不做全量下载/导出**（EWS 不允许浏览 GAL）。不含联系人写命令、联系人分发列表（`IPF.Contact.DistributionList`，但 GAL 搜索会返回分发列表条目）与联系人照片。
 - `folder list` 对没有 EWS distinguished name 的文件夹返回 `well_known_name: null`（例如自定义文件夹、主邮箱里名为 `Archive` 的文件夹），这些文件夹只能用 folder ID 选择。
@@ -208,7 +208,7 @@ uv run pytest          # 启用了分支覆盖率，门槛 90%
 ```
 
 - 类型检查使用 Pyright **strict**；只有 exchangelib 所在的适配器模块局部关闭第三方缺失类型诊断。
-- 测试使用 fake gateway 隔离网络与 Keychain，因此可以在普通 CI 中运行。
+- 测试使用 fake gateway 隔离网络与系统 keyring，因此可以在普通 CI 中运行。
 - 真实 EWS 验收无法在 CI 中运行：需要在企业网络内用真实邮箱手工执行（`doctor` 记录服务器版本，然后覆盖同步、分页、过滤、发送与回读、三类草稿保存、mark-read/reply/move、附件保存）。
 
 ## License

@@ -5,7 +5,7 @@ from typing import cast
 
 import keyring
 import pytest
-from keyring.errors import KeyringError
+from keyring.errors import InitError, KeyringError, KeyringLocked, NoKeyringError
 from pydantic import JsonValue, SecretStr
 from pytest import CaptureFixture, MonkeyPatch
 
@@ -176,7 +176,8 @@ def test_doctor_handles_missing_password_before_verifying_tls(
 
     assert exit_code == 3
     assert _error(output)["code"] == "authentication_error"
-    assert _check(output) == "keychain"
+    assert _check(output) == "keyring"
+    assert _reason(output) == "missing"
 
 
 def test_doctor_handles_keyring_failure(
@@ -190,7 +191,51 @@ def test_doctor_handles_keyring_failure(
 
     assert exit_code == 3
     assert _error(output)["code"] == "authentication_error"
-    assert _check(output) == "keychain"
+    assert _check(output) == "keyring"
+    assert _reason(output) == "error"
+
+
+def test_doctor_handles_locked_keyring(
+    tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
+) -> None:
+    _configure(tmp_path, monkeypatch)
+    _set_dependencies(monkeypatch, UnexpectedClient, UnexpectedTlsProbe)
+    monkeypatch.setattr(keyring, "get_password", _locked_password_read)
+
+    exit_code, output = _invoke(capsys, "--user", "agent@example.com", "doctor")
+
+    assert exit_code == 3
+    assert _error(output)["code"] == "authentication_error"
+    assert _check(output) == "keyring"
+    assert _reason(output) == "locked"
+    assert "unlock" in str(_error(output)["message"])
+
+
+@pytest.mark.parametrize(
+    "error",
+    [NoKeyringError("no backend"), InitError("backend failed to initialize")],
+)
+def test_doctor_handles_unavailable_keyring(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+    monkeypatch: MonkeyPatch,
+    error: Exception,
+) -> None:
+    _configure(tmp_path, monkeypatch)
+    _set_dependencies(monkeypatch, UnexpectedClient, UnexpectedTlsProbe)
+
+    def unavailable_password_read(service: str, username: str) -> str | None:
+        del service, username
+        raise error
+
+    monkeypatch.setattr(keyring, "get_password", unavailable_password_read)
+
+    exit_code, output = _invoke(capsys, "--user", "agent@example.com", "doctor")
+
+    assert exit_code == 3
+    assert _error(output)["code"] == "authentication_error"
+    assert _check(output) == "keyring"
+    assert _reason(output) == "backend_unavailable"
 
 
 def test_doctor_handles_tls_failure_before_logging_in(
@@ -282,6 +327,10 @@ def _check(output: dict[str, JsonValue]) -> JsonValue:
     return cast(dict[str, JsonValue], _error(output)["details"])["check"]
 
 
+def _reason(output: dict[str, JsonValue]) -> JsonValue:
+    return cast(dict[str, JsonValue], _error(output)["details"])["reason"]
+
+
 def _unexpected_password_read(service: str, username: str) -> str | None:
     del service, username
     raise AssertionError("doctor must not read a password for a mismatched user")
@@ -290,3 +339,8 @@ def _unexpected_password_read(service: str, username: str) -> str | None:
 def _failing_password_read(service: str, username: str) -> str | None:
     del service, username
     raise KeyringError("Keyring is unavailable")
+
+
+def _locked_password_read(service: str, username: str) -> str | None:
+    del service, username
+    raise KeyringLocked("Keyring is locked")

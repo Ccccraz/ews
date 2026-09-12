@@ -256,7 +256,7 @@ def test_sync_batches_get_item_and_reads_remain_local(
 
     def reject_password(service_name: str, username: str) -> str:
         del service_name, username
-        raise AssertionError("Local reads must not access Keychain")
+        raise AssertionError("Local reads must not access the system keyring")
 
     monkeypatch.setattr(keyring, "get_password", reject_password)
     assert service.list_folders("DOMAIN\\agent").folders[0].id == "inbox-id"

@@ -9,7 +9,7 @@
 - EWS 集成使用同步 `exchangelib 5.6.x`，不得自行实现 SOAP 客户端。
 - `exchangelib` 只能存在于基础设施适配层；其无类型对象不得泄漏到应用层或 CLI 层。
 - EWS 适配器必须实现项目自有的严格类型 `MailboxGateway` Protocol，并在边界处转换成 Pydantic 模型。
-- 非敏感配置使用 TOML，并统一存放在 `$HOME/.config/taskseed/ews/`；密码只存储在 Keychain 中。
+- 非敏感配置使用 TOML，并统一存放在 `$HOME/.config/taskseed/ews/`（`$HOME` 即 Python `Path.home()`）；密码只存储在系统 keyring 中。
 - 业务结果写 stdout；诊断日志写 stderr。密码不得进入配置文件、命令行参数、输出或日志。
 - 日志使用 `structlog`：默认把诊断渲染为 stderr 上的 JSON 行，`--log-format console` 是显式的人类可读模式；第三方标准库 `logging` 走同一个 stderr handler。
 - 使用显式构造参数进行依赖注入，不引入依赖注入框架。

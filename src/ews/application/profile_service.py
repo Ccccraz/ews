@@ -7,7 +7,7 @@ from ews.models import Profile
 
 
 class ProfileApplicationService:
-    """Coordinate profile configuration with its Keychain credential."""
+    """Coordinate profile configuration with its system keyring credential."""
 
     def __init__(self, profile_store: ProfileStore, password_store: PasswordStore) -> None:
         self._profile_store = profile_store

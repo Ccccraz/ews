@@ -9,7 +9,7 @@ This project puts agent tooling on top of a local Exchange mailbox. It does one 
 - **Machine-first output**: apart from `--help`/`--version`, every invocation writes exactly one JSON object to stdout; diagnostics always go to stderr.
 - **Local-first reads**: `sync` mirrors the mailbox into a local SQLite cache, and every read command only reads that cache, so reads do not depend on a stable network.
 - **Explicit, limited writes**: send, save drafts, reply, mark read, move and download attachments — and **no ability to delete messages or folders**.
-- **Credential safety**: the password lives only in the macOS Keychain and never reaches configuration files, command-line arguments, output or logs.
+- **Credential safety**: the password lives only in the system keyring and never reaches configuration files, command-line arguments, output or logs.
 
 ## Capabilities
 
@@ -25,7 +25,7 @@ This project puts agent tooling on top of a local Exchange mailbox. It does one 
 
 ## Requirements
 
-- **macOS**: the system Keychain and the system trust store (via Truststore) provide TLS verification.
+- **macOS / Windows / Linux (desktop)**: credentials use the system keyring — Keychain on macOS, Credential Manager on Windows, and the desktop Secret Service on Linux (GNOME Keyring/KWallet over D-Bus; headless/SSH/containers are not supported). TLS verifies against the operating system trust store via Truststore.
 - **Python ≥ 3.14** and **uv**.
 - Network access to an EWS endpoint inside the corporate network (HTTPS + NTLM), addressed by an explicit endpoint — Autodiscover is not used.
 - Fully accepted against one **Microsoft Exchange Server 2019** mailbox; no other server version is claimed to be compatible yet.
@@ -51,10 +51,10 @@ uv run ews --help
 
 ```nu
 # 1. Interactively store the non-secret configuration; the password is read
-#    without echo and written to the macOS Keychain.
+#    without echo and written to the system keyring.
 ews set
 
-# 2. Verify configuration, Keychain, system TLS and NTLM login, and report the
+# 2. Verify configuration, system keyring, system TLS and NTLM login, and report the
 #    server version.
 ews --user agent test
 
@@ -88,7 +88,7 @@ ews --user agent message thread <message-id>
 | --- | --- | --- | --- |
 | `set` | Interactively add or update a profile by mailbox | no | no |
 | `test` | One real Inbox metadata request | yes | no |
-| `doctor` | Verify configuration, Keychain, system TLS, NTLM | yes | no |
+| `doctor` | Verify configuration, system keyring, system TLS, NTLM | yes | no |
 | `sync [--progress]` | Incrementally synchronize into the local cache (mail + personal contacts) | yes | no (it writes the cache) |
 | `folder list` | Folder tree with folder IDs and well-known names | yes | yes |
 | `contact list` | Contacts with folder/text filters plus pagination | yes | yes |
@@ -106,7 +106,7 @@ ews --user agent message thread <message-id>
 | `attachment save <mid> <aid> --path <file>` | Stream one attachment to disk | yes | yes |
 | `config list` / `path` | List all non-secret profiles or show their path | no | no |
 | `config show` / `delete` | Show or delete the selected profile | yes | no |
-| `auth set-password` / `status` / `delete-password` | Manage the selected profile's Keychain password | yes | no |
+| `auth set-password` / `status` / `delete-password` | Manage the selected profile's system keyring password | yes | no |
 
 The `message list` filters combine with AND: `--folder`, `--read-state read|unread|any`, `--sender`, `--subject-contains`, `--body-contains`, `--received-from`, `--received-before`. Pagination uses `--limit` (default 50, maximum 200) and `--offset`. `message thread` accepts `--limit` (default 20, maximum 200) and `--offset`.
 
@@ -148,7 +148,7 @@ Diagnostics and logging:
 
 ## Configuration and credentials
 
-The non-secret configuration is TOML, fixed at `$HOME/.config/taskseed/ews/profiles.toml`.
+The non-secret configuration is TOML, fixed at `$HOME/.config/taskseed/ews/profiles.toml` (where `$HOME` is Python's `Path.home()`, so the path is uniform across platforms).
 Each `[[profiles]]` entry is one profile. Mailboxes and NTLM usernames are aliases that
 must be unique when compared case-insensitively:
 
@@ -170,9 +170,9 @@ mailbox = "operator@example.com"
 username = "operator"
 ```
 
-The password is stored separately in the macOS Keychain: service `taskseed.ews:<endpoint-host>`, account = NTLM username. The password must **never** appear in the TOML file, command-line arguments, stdout, stderr or logs, and `config show` never reveals secrets. `config delete` deletes the selected Keychain password before deleting the profile; an already absent password is successful, while a Keychain backend failure preserves the profile. SQLite mailbox caches are always retained.
+The password is stored separately in the system keyring: service `taskseed.ews:<endpoint-host>`, account = NTLM username. The password must **never** appear in the TOML file, command-line arguments, stdout, stderr or logs, and `config show` never reveals secrets. `config delete` deletes the selected keyring password before deleting the profile; an already absent password is successful, while a keyring backend failure preserves the profile. SQLite mailbox caches are always retained.
 
-The old `$HOME/.config/taskseed/ews/profile.toml` is neither read nor migrated automatically. To upgrade, run `ews set` again for every account, or create `profiles.toml` manually: add `[[profiles]]` and rename the old `[server]` and `[user]` tables to `[profiles.server]` and `[profiles.user]`. The Keychain key format is unchanged, so passwords need not be saved again unless the endpoint host or NTLM username also changes.
+The old `$HOME/.config/taskseed/ews/profile.toml` is neither read nor migrated automatically. To upgrade, run `ews set` again for every account, or create `profiles.toml` manually: add `[[profiles]]` and rename the old `[server]` and `[user]` tables to `[profiles.server]` and `[profiles.user]`. The keyring key format is unchanged, so passwords need not be saved again unless the endpoint host or NTLM username also changes.
 
 ## Local cache and synchronization
 
@@ -196,8 +196,8 @@ The old `$HOME/.config/taskseed/ews/profile.toml` is neither read nor migrated a
 
 ## Known limitations
 
-- macOS only; multiple independent mailbox profiles are supported, but shared mailboxes, impersonation, and a default/current profile are not.
-- No Autodiscover, no custom CA files, no way to skip TLS verification.
+- macOS is fully accepted against a real mailbox; Windows and Linux (desktop) are implemented but not yet accepted against a real mailbox. Linux needs a desktop session with a Secret Service; headless/SSH/containers are not supported. Multiple independent mailbox profiles are supported, but shared mailboxes, impersonation, and a default/current profile are not.
+- No Autodiscover, no custom CA files, no way to skip TLS verification; Linux additionally needs OpenSSL 3.0.3+ and system `ca-certificates`.
 - Not in this first version: deleting, forwarding, updating/sending/deleting existing drafts, draft or outgoing attachments, calendar and tasks, MIME `.eml` export.
 - Contacts: personal contacts (`IPF.Contact`) are read-only and locally cached; the corporate directory (GAL) is queried live via `contact search` and is **never downloaded or exported** (EWS does not allow browsing the GAL). There are no contact write commands, and contact distribution lists (`IPF.Contact.DistributionList`) and contact photos are out of scope, although GAL search does return distribution-list entries.
 - `folder list` returns `well_known_name: null` for folders without an EWS distinguished name (custom folders, or the main-mailbox folder literally named `Archive`); those can only be selected by folder ID.
@@ -213,7 +213,7 @@ uv run pytest          # branch coverage is enabled with a 90% floor
 ```
 
 - Type checking runs Pyright in **strict** mode; only the exchangelib adapter module suppresses the missing third-party type information locally.
-- Tests use a fake gateway, so they isolate the network and the Keychain and run in ordinary CI.
+- Tests use a fake gateway, so they isolate the network and the system keyring and run in ordinary CI.
 - Real EWS acceptance cannot run in CI: it has to be performed manually inside the corporate network with a real mailbox (`doctor` records the server version first, then covers synchronization, pagination, filters, send-and-read-back, all three draft creation modes, mark-read/reply/move and attachment saving).
 
 ## License
