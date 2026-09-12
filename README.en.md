@@ -35,7 +35,13 @@ This project puts agent tooling on top of a local Exchange mailbox. It does one 
 Install it as a tool (recommended for daily use):
 
 ```nu
-uv tool install git+https://github.com/Ccccraz/ews
+uv tool install taskseed-ews
+```
+
+You can also pin to a release tag (replace `vX.Y.Z` with a real version):
+
+```nu
+uv tool install git+https://github.com/Ccccraz/ews@vX.Y.Z
 ```
 
 Or work from a source checkout (development, or to change the code):
