@@ -139,7 +139,12 @@ class FakeStoredItem:
         if self.error is not None:
             raise self.error
         self.save_calls.append(update_fields)
-        self.changekey = "change-2"
+        # The server bumps the change key, but the value that stays on this object does
+        # not match it: only a re-read returns the authoritative one.
+        self.changekey = "stale-change-key"
+        FakeAccount.next_items = [
+            FakeStoredItem(message_id=self.id, changekey="change-2", is_read=self.is_read)
+        ]
 
     def move(self, to_folder: object) -> None:
         if self.error is not None:
@@ -152,6 +157,7 @@ class FakeStoredItem:
 class FakeAccount:
     last_instance: ClassVar[FakeAccount | None] = None
     items: ClassVar[list[object]] = []
+    next_items: ClassVar[list[object] | None] = None
     fetch_error: ClassVar[Exception | None] = None
     fetch_calls: ClassVar[list[tuple[list[FakeItemId], list[str]]]] = []
 
@@ -163,6 +169,9 @@ class FakeAccount:
         FakeAccount.fetch_calls.append((list(ids), list(only_fields)))
         if FakeAccount.fetch_error is not None:
             raise FakeAccount.fetch_error
+        if FakeAccount.next_items is not None:
+            items, FakeAccount.next_items = FakeAccount.next_items, None
+            return items
         return list(FakeAccount.items)
 
 
@@ -291,14 +300,17 @@ def test_reply_message_rejects_an_original_without_a_sender(monkeypatch: MonkeyP
         )
 
 
-def test_set_read_state_updates_only_the_read_flag(monkeypatch: MonkeyPatch) -> None:
+def test_set_read_state_reports_the_change_key_read_back_from_the_server(
+    monkeypatch: MonkeyPatch,
+) -> None:
     item = FakeStoredItem(is_read=False)
     _install(monkeypatch, items=[item])
 
     result = EwsClient().set_read_state(_profile(), SecretStr("secret"), "message-id", is_read=True)
 
-    assert FakeAccount.fetch_calls[0][1] == []
+    assert [only_fields for _, only_fields in FakeAccount.fetch_calls] == [[], ["is_read"]]
     assert item.save_calls == [["is_read"]]
+    assert item.changekey == "stale-change-key"
     assert result.model_dump() == {
         "user": "DOMAIN\\agent",
         "message_id": "message-id",
@@ -402,6 +414,7 @@ def test_write_operations_translate_original_fetch_failures(monkeypatch: MonkeyP
 
 def _install(monkeypatch: MonkeyPatch, *, items: Sequence[object] = ()) -> None:
     FakeAccount.items = list(items)
+    FakeAccount.next_items = None
     FakeAccount.fetch_error = None
     FakeAccount.fetch_calls = []
     FakeAccount.last_instance = None

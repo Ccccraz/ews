@@ -296,11 +296,15 @@ class EwsClient:
             item = _fetch_item(account, message_id, ())
             item.is_read = is_read
             item.save(update_fields=["is_read"])
+            # Reading the state back is the only reliable way to report the change key:
+            # the value exchangelib leaves on the local item after save() does not match
+            # the change key the server stores for the updated message.
+            updated = _fetch_item(account, message_id, ("is_read",))
             return MessageReadStateResult(
                 user=profile.user.username,
-                message_id=str(item.id),
-                change_key=str(item.changekey),
-                is_read=bool(item.is_read),
+                message_id=str(updated.id),
+                change_key=str(updated.changekey),
+                is_read=bool(updated.is_read),
             )
 
         return self._run_write(profile, password, operation)
