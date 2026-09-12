@@ -1,6 +1,6 @@
 [project]
 name = "taskseed-ews"
-version = "0.1.0"
+version = "0.1.1"
 description = "A CLI adapter between AI agents and Exchange Web Services"
 readme = "README.md"
 authors = [
