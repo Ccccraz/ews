@@ -356,6 +356,41 @@ def test_folder_sync_repairs_well_known_inbox_mapping_without_counting_a_change(
     assert store.list_folders("agent@example.com")[0].well_known_name == "inbox"
 
 
+def test_folder_sync_clears_well_known_names_that_no_longer_resolve(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    stale = _folder("longterm-id", "msgfolderroot")
+    store.replace_folders("agent@example.com", [stale])
+
+    store.apply_folder_changes(
+        "agent@example.com",
+        [],
+        "hierarchy-state",
+        reset=False,
+        well_known_folder_ids={"inbox": "inbox-id"},
+    )
+
+    assert store.list_folders("agent@example.com")[0].well_known_name is None
+
+
+def test_folder_change_for_an_existing_folder_is_not_counted_as_created(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    folder = _folder("inbox-id", "Inbox")
+    store.replace_folders("agent@example.com", [folder])
+
+    counts = store.apply_folder_changes(
+        "agent@example.com",
+        [FolderChange(kind=FolderChangeKind.CREATE, folder_id=folder.id, folder=folder)],
+        "hierarchy-state",
+        reset=False,
+    )
+
+    assert counts.created == 0
+    assert counts.updated == 0
+    assert store.list_folders("agent@example.com")[0].name == "Inbox"
+
+
 def test_failed_message_application_does_not_advance_item_state(tmp_path: Path) -> None:
     store = _store(tmp_path)
     folder = _folder("inbox-id", "Inbox")

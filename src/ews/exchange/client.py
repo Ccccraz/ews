@@ -1,7 +1,7 @@
 # pyright: reportMissingTypeStubs=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 import shutil
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -96,12 +96,23 @@ DETAIL_FIELDS = (
 FOLDER_SYNC_FIELDS = ("parent_folder_id", "total_count", "unread_count", "is_hidden")
 REPLY_FIELDS = ("subject", "author", "to_recipients", "cc_recipients", "bcc_recipients")
 MAIL_FOLDER_CLASSES = {"IPF.Note", "IPF.Note.OutlookHomepage", "IPF.StickyNote"}
-MAIL_FOLDER_WELL_KNOWN_NAMES = {"conversationhistory"}
-MAIL_NAVIGATION_EXCLUDED_WELL_KNOWN_NAMES = {
-    "conflicts",
-    "localfailures",
-    "serverfailures",
-    "syncissues",
+# Distinguished mail folders, keyed by the name the cache stores and mapped to the Account
+# attribute that resolves them. A hierarchy synchronization response carries no
+# distinguished id, so these are resolved through the Account and matched by folder id; a
+# folder that resolves to none of these ids keeps a null name.
+WELL_KNOWN_MAIL_FOLDERS = {
+    "inbox": "inbox",
+    "sentitems": "sent",
+    "drafts": "drafts",
+    "deleteditems": "trash",
+    "junkemail": "junk",
+    "outbox": "outbox",
+    "notes": "notes",
+    "conversationhistory": "conversation_history",
+    "syncissues": "sync_issues",
+    "conflicts": "conflicts",
+    "localfailures": "local_failures",
+    "serverfailures": "server_failures",
 }
 CONVERSATION_ROOT_INDEX_LENGTH = 22
 CONVERSATION_REPLY_INDEX_LENGTH = 5
@@ -161,21 +172,26 @@ class EwsClient:
 
         def operation(account: Any) -> FolderSyncResult:
             root = account.msg_folder_root
+            named_folders = _distinguished_mail_folders(account)
+            well_known_ids = {str(folder.id) for folder in named_folders.values()}
             raw_changes = list(
                 root.sync_hierarchy(sync_state=sync_state, only_fields=FOLDER_SYNC_FIELDS)
             )
             changes = [
                 change
                 for kind, folder in raw_changes
-                if (change := _folder_change(kind, folder)) is not None
+                if (change := _folder_change(kind, folder, well_known_ids)) is not None
             ]
+            changes.extend(_unreported_named_folders(named_folders, changes))
             new_state = root.folder_sync_state
             if not new_state:
                 raise EwsServiceError("EWS did not return a folder synchronization state")
             return FolderSyncResult(
                 changes=changes,
                 sync_state=str(new_state),
-                well_known_folder_ids={"inbox": str(account.inbox.id)},
+                well_known_folder_ids={
+                    name: str(folder.id) for name, folder in named_folders.items()
+                },
             )
 
         return self._run(profile, password, operation)
@@ -509,7 +525,9 @@ def _sorted_mail_addresses(mailboxes: Iterable[Any] | None) -> list[MailboxAddre
     return sorted(addresses, key=lambda address: address.address.casefold())
 
 
-def _folder_change(kind: str, raw_folder: Any) -> FolderChange | None:
+def _folder_change(
+    kind: str, raw_folder: Any, well_known_ids: Collection[str]
+) -> FolderChange | None:
     folder_id = str(raw_folder.id)
     if kind == FolderChangeKind.DELETE:
         change_key = getattr(raw_folder, "changekey", None)
@@ -518,25 +536,15 @@ def _folder_change(kind: str, raw_folder: Any) -> FolderChange | None:
             folder_id=folder_id,
             change_key=None if change_key is None else str(change_key),
         )
-    if not _is_mail_folder(raw_folder):
+    if not _is_mail_folder(raw_folder, well_known_ids):
         if kind == FolderChangeKind.UPDATE:
             return FolderChange(kind=FolderChangeKind.DELETE, folder_id=folder_id)
         return None
-    folder = Folder(
-        id=folder_id,
-        parent_id=(
-            str(raw_folder.parent_folder_id.id) if raw_folder.parent_folder_id is not None else None
-        ),
-        name=str(raw_folder.name),
-        well_known_name=_well_known_name(raw_folder),
-        total_count=int(raw_folder.total_count or 0),
-        unread_count=int(raw_folder.unread_count or 0),
-    )
     return FolderChange(
         kind=FolderChangeKind(kind),
         folder_id=folder_id,
         change_key=_change_key(raw_folder),
-        folder=folder,
+        folder=_folder_model(raw_folder),
     )
 
 
@@ -582,16 +590,10 @@ def _change_key(item: Any) -> str:
     return str(value)
 
 
-def _is_mail_folder(folder: Any) -> bool:
+def _is_mail_folder(folder: Any, well_known_ids: Collection[str]) -> bool:
     if getattr(folder, "is_hidden", False) is True:
         return False
-    well_known_name = _well_known_name(folder)
-    if well_known_name in MAIL_NAVIGATION_EXCLUDED_WELL_KNOWN_NAMES:
-        return False
-    return (
-        folder.folder_class in MAIL_FOLDER_CLASSES
-        or well_known_name in MAIL_FOLDER_WELL_KNOWN_NAMES
-    )
+    return str(folder.id) in well_known_ids or folder.folder_class in MAIL_FOLDER_CLASSES
 
 
 def _ensure_folder_extensions() -> None:
@@ -611,8 +613,49 @@ def _ensure_item_extensions() -> None:
         return
 
 
-def _well_known_name(folder: Any) -> str | None:
-    return getattr(type(folder), "DISTINGUISHED_FOLDER_ID", None)
+def _folder_model(raw_folder: Any) -> Folder:
+    return Folder(
+        id=str(raw_folder.id),
+        parent_id=(
+            str(raw_folder.parent_folder_id.id) if raw_folder.parent_folder_id is not None else None
+        ),
+        name=str(raw_folder.name),
+        well_known_name=None,
+        total_count=int(raw_folder.total_count or 0),
+        unread_count=int(raw_folder.unread_count or 0),
+    )
+
+
+def _distinguished_mail_folders(account: Any) -> dict[str, Any]:
+    """Resolve distinguished mail folders, skipping folders this mailbox does not have."""
+    resolved: dict[str, Any] = {}
+    for name, attribute in WELL_KNOWN_MAIL_FOLDERS.items():
+        try:
+            resolved[name] = getattr(account, attribute)
+        except ErrorFolderNotFound:
+            continue
+    return resolved
+
+
+def _unreported_named_folders(
+    named_folders: Mapping[str, Any], changes: Sequence[FolderChange]
+) -> list[FolderChange]:
+    """Report distinguished folders this hierarchy synchronization did not mention.
+
+    The synchronization state has already moved past a folder that was filtered out or
+    never cached, so EWS will not report it again. Re-reporting it keeps the cached folder
+    tree complete without forcing a full re-synchronization.
+    """
+    reported = {change.folder_id for change in changes}
+    return [
+        FolderChange(
+            kind=FolderChangeKind.CREATE,
+            folder_id=str(folder.id),
+            folder=_folder_model(folder),
+        )
+        for folder in named_folders.values()
+        if str(folder.id) not in reported
+    ]
 
 
 def _folder_from_id(account: Any, folder_id: str) -> Any:

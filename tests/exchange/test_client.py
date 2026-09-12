@@ -5,7 +5,12 @@ from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
-from exchangelib.errors import ErrorInvalidSyncStateData, TransportError, UnauthorizedError
+from exchangelib.errors import (
+    ErrorFolderNotFound,
+    ErrorInvalidSyncStateData,
+    TransportError,
+    UnauthorizedError,
+)
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
@@ -25,7 +30,6 @@ class FakeConfiguration:
 
 
 class MailFolder:
-    DISTINGUISHED_FOLDER_ID = "inbox"
     folder_class = "IPF.Note"
     is_hidden = False
 
@@ -51,13 +55,17 @@ class MailFolder:
 
 
 class CalendarFolder(MailFolder):
-    DISTINGUISHED_FOLDER_ID = "calendar"
     folder_class = "IPF.Appointment"
 
 
 class HiddenFolder(MailFolder):
-    DISTINGUISHED_FOLDER_ID = None
     is_hidden = True
+
+
+class OtherClassFolder(MailFolder):
+    """A folder whose class is not a mail class, used for well-known folders such as history."""
+
+    folder_class = "IPF.Other"
 
 
 class FakeRoot:
@@ -80,16 +88,56 @@ class FakeRoot:
         return self.folders
 
 
-class FakeInbox:
-    id = "parent"
-    total_count = 12
-    unread_count = 3
+class FakeDistinguishedFolder:
+    """A resolved distinguished folder, as exchangelib returns it from GetFolder."""
 
+    def __init__(
+        self, folder_id: str, name: str, *, total_count: int = 0, unread_count: int = 0
+    ) -> None:
+        self.id = folder_id
+        self.name = name
+        self.parent_folder_id = SimpleNamespace(id="msg-folder-root")
+        self.total_count = total_count
+        self.unread_count = unread_count
+
+
+class FakeInbox(FakeDistinguishedFolder):
     def __init__(self) -> None:
+        super().__init__("parent", "Inbox", total_count=12, unread_count=3)
         self.refreshed = False
 
     def refresh(self) -> None:
         self.refreshed = True
+
+
+# Mirrors the distinguished mail folders the adapter resolves through Account attributes.
+DISTINGUISHED_FOLDERS = {
+    "sent": ("sent-folder", "Sent Items"),
+    "drafts": ("drafts-folder", "Drafts"),
+    "trash": ("deleteditems-folder", "Deleted Items"),
+    "junk": ("junk-email-folder", "Junk Email"),
+    "outbox": ("outbox-folder", "Outbox"),
+    "notes": ("notes-folder", "Notes"),
+    "conversation_history": ("conversation-history-folder", "Conversation History"),
+    "sync_issues": ("sync-issues-folder", "Sync Issues"),
+    "conflicts": ("conflicts-folder", "Conflicts"),
+    "local_failures": ("local-failures-folder", "Local Failures"),
+    "server_failures": ("server-failures-folder", "Server Failures"),
+}
+# Named folders the fake root never reports, in resolution order.
+OMITTED_NAMED_FOLDER_IDS = [
+    "sent-folder",
+    "drafts-folder",
+    "deleteditems-folder",
+    "junk-email-folder",
+    "outbox-folder",
+    "notes-folder",
+    "conversation-history-folder",
+    "sync-issues-folder",
+    "conflicts-folder",
+    "local-failures-folder",
+    "server-failures-folder",
+]
 
 
 class FakeAccount:
@@ -100,6 +148,8 @@ class FakeAccount:
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
         self.inbox = FakeInbox()
+        for attribute, (folder_id, name) in DISTINGUISHED_FOLDERS.items():
+            setattr(self, attribute, FakeDistinguishedFolder(folder_id, name))
         self.version = "Exchange2019"
         self.msg_folder_root = type(self).root
         self.fetch_args: dict[str, object] | None = None
@@ -108,6 +158,18 @@ class FakeAccount:
     def fetch(self, **kwargs: object) -> list[object]:
         self.fetch_args = kwargs
         return self.fetched
+
+
+class AccountWithoutSentItems(FakeAccount):
+    """A mailbox where one distinguished folder cannot be resolved."""
+
+    @property
+    def sent(self) -> object:
+        raise ErrorFolderNotFound("the mailbox has no Sent Items folder")
+
+    @sent.setter
+    def sent(self, value: object) -> None:
+        del value
 
 
 class FailingAccount:
@@ -213,17 +275,77 @@ def test_sync_hierarchy_consumes_generator_and_filters_visible_folders(
     result = EwsClient().sync_hierarchy(_profile(), SecretStr("secret"), "old-state")
 
     assert result.sync_state == "hierarchy-state-2"
-    assert [change.kind for change in result.changes] == [
-        FolderChangeKind.CREATE,
-        FolderChangeKind.UPDATE,
-        FolderChangeKind.DELETE,
-        FolderChangeKind.DELETE,
+    assert [(change.kind, change.folder_id) for change in result.changes[:4]] == [
+        (FolderChangeKind.CREATE, "parent"),
+        (FolderChangeKind.UPDATE, "child"),
+        (FolderChangeKind.DELETE, "calendar"),
+        (FolderChangeKind.DELETE, "deleted"),
     ]
+    ensured = result.changes[4:]
+    assert [change.folder_id for change in ensured] == OMITTED_NAMED_FOLDER_IDS
+    assert {change.kind for change in ensured} == {FolderChangeKind.CREATE}
     assert result.changes[1].folder is not None
     assert result.changes[1].folder.parent_id == "parent"
-    assert result.well_known_folder_ids == {"inbox": "parent"}
+    assert result.changes[1].folder.well_known_name is None
+    assert [change.folder.name for change in ensured if change.folder is not None] == [
+        "Sent Items",
+        "Drafts",
+        "Deleted Items",
+        "Junk Email",
+        "Outbox",
+        "Notes",
+        "Conversation History",
+        "Sync Issues",
+        "Conflicts",
+        "Local Failures",
+        "Server Failures",
+    ]
+    assert result.well_known_folder_ids == {
+        "inbox": "parent",
+        "sentitems": "sent-folder",
+        "drafts": "drafts-folder",
+        "deleteditems": "deleteditems-folder",
+        "junkemail": "junk-email-folder",
+        "outbox": "outbox-folder",
+        "notes": "notes-folder",
+        "conversationhistory": "conversation-history-folder",
+        "syncissues": "sync-issues-folder",
+        "conflicts": "conflicts-folder",
+        "localfailures": "local-failures-folder",
+        "serverfailures": "server-failures-folder",
+    }
     assert root.sync_calls[0][0] == "old-state"
     assert "is_hidden" in root.sync_calls[0][1]
+
+
+def test_sync_hierarchy_skips_well_known_folders_the_mailbox_lacks(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    FakeAccount.root = FakeRoot()
+    _patch_account(monkeypatch, AccountWithoutSentItems)
+
+    result = EwsClient().sync_hierarchy(_profile(), SecretStr("secret"), None)
+
+    assert "sentitems" not in result.well_known_folder_ids
+    assert result.well_known_folder_ids["inbox"] == "parent"
+
+
+def test_sync_hierarchy_includes_a_well_known_folder_of_another_class(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    root = FakeRoot()
+    root.changes = [
+        ("create", OtherClassFolder("conversation-history-folder")),
+        ("create", CalendarFolder("calendar-folder")),
+    ]
+    FakeAccount.root = root
+    _patch_account(monkeypatch, FakeAccount)
+
+    result = EwsClient().sync_hierarchy(_profile(), SecretStr("secret"), None)
+
+    reported = [(change.kind, change.folder_id) for change in result.changes]
+    assert (FolderChangeKind.CREATE, "conversation-history-folder") in reported
+    assert all(folder_id != "calendar-folder" for _, folder_id in reported)
 
 
 def test_sync_items_maps_all_change_types_with_id_only(monkeypatch: MonkeyPatch) -> None:
