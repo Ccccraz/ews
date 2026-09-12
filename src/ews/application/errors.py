@@ -10,6 +10,10 @@ class MessageNotFoundError(Exception):
     """Raised when a selected message does not exist."""
 
 
+class ContactNotFoundError(Exception):
+    """Raised when a selected contact does not exist."""
+
+
 class InvalidSyncStateError(Exception):
     """Raised when EWS rejects a stored synchronization state."""
 

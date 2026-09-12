@@ -16,10 +16,17 @@ from ews.exchange import EwsServiceError
 from ews.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
+    Contact,
+    ContactChange,
+    ContactChangeKind,
+    ContactEmail,
+    ContactSyncResult,
+    DirectorySearchResult,
     DraftMessage,
     Folder,
     FolderChange,
     FolderChangeKind,
+    FolderKind,
     FolderSyncResult,
     MessageBody,
     MessageDetail,
@@ -112,15 +119,31 @@ class ReadGateway:
             total_count=0,
             unread_count=0,
         )
+        contacts = Folder(
+            id="contacts-id",
+            parent_id=None,
+            name="Contacts",
+            well_known_name="contacts",
+            total_count=1,
+            unread_count=0,
+        )
         return FolderSyncResult(
             changes=[
                 FolderChange(
                     kind=FolderChangeKind.CREATE,
                     folder_id=folder.id,
                     folder=folder,
-                )
+                    folder_kind=FolderKind.MAIL,
+                ),
+                FolderChange(
+                    kind=FolderChangeKind.CREATE,
+                    folder_id=contacts.id,
+                    folder=contacts,
+                    folder_kind=FolderKind.CONTACTS,
+                ),
             ],
             sync_state="hierarchy-state",
+            well_known_folder_ids={"contacts": "contacts-id"},
         )
 
     def sync_items(
@@ -140,6 +163,41 @@ class ReadGateway:
         message_ids: Sequence[tuple[str, str]],
     ) -> list[MessageDetail]:
         del profile, password, message_ids
+        raise AssertionError("Not used")
+
+    def sync_contacts(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        folder_id: str,
+        sync_state: str | None,
+    ) -> ContactSyncResult:
+        del profile, password, sync_state
+        assert folder_id == "contacts-id"
+        return ContactSyncResult(
+            changes=[
+                ContactChange(
+                    kind=ContactChangeKind.CREATE,
+                    contact_id="contact-id",
+                    change_key="contact-change",
+                )
+            ],
+            sync_state="contact-state",
+        )
+
+    def fetch_contacts(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        contact_ids: Sequence[tuple[str, str]],
+    ) -> list[Contact]:
+        del profile, password, contact_ids
+        return [_contact()]
+
+    def search_directory(
+        self, profile: Profile, password: SecretStr, query: str
+    ) -> DirectorySearchResult:
+        del profile, password, query
         raise AssertionError("Not used")
 
     def send_message(
@@ -290,13 +348,14 @@ def test_sync_returns_counts_and_enables_local_reads(
 
     assert exit_code == 0
     data = cast(dict[str, JsonValue], output["data"])
-    assert data["folders"] == {"created": 1, "updated": 0, "deleted": 0}
+    assert data["folders"] == {"created": 2, "updated": 0, "deleted": 0}
     assert data["messages"] == {
         "created": 0,
         "updated": 0,
         "deleted": 0,
         "read_state_changed": 0,
     }
+    assert data["contacts"] == {"created": 1, "updated": 0, "deleted": 0}
 
 
 def test_sync_progress_is_opt_in_and_writes_to_stdout(
@@ -470,6 +529,16 @@ def _invoke(args: list[str], capsys: CaptureFixture[str]) -> tuple[int, dict[str
     assert captured.err == ""
     assert isinstance(exit_info.value.code, int)
     return exit_info.value.code, cast(dict[str, JsonValue], json.loads(captured.out))
+
+
+def _contact() -> Contact:
+    return Contact(
+        id="contact-id",
+        change_key="contact-change",
+        parent_folder_id="contacts-id",
+        display_name="Alice Zhang",
+        emails=[ContactEmail(label="EmailAddress1", address="alice@example.com")],
+    )
 
 
 def _summary() -> MessageSummary:

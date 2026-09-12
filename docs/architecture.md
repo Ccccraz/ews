@@ -42,22 +42,25 @@ CLI -> Application Service -> MailboxGateway Protocol -> Exchangelib Adapter
 
 ## 本地缓存
 
-- 远端是唯一事实来源：缓存只存元数据与正文，不存附件内容；读取命令一律只读缓存，未就绪时返回 `cache_not_ready`/4 并提示先 `sync`。
-- `ready` 只在一次完整 `sync` 的结尾写入。缓存文件不存在、schema 处于待重建版本、或该 mailbox 的 ready 状态缺失或为 false 时，读取一律返回 `cache_not_ready`/4。受此门控的是 `folder list`、`message list|get|thread`、`message reply|reply-all|draft reply|draft reply-all|mark-read|move` 和 `attachment save`；`sync`、`test`、`doctor`、`send`、`draft create` 与 `set`/`config`/`auth` 不依赖缓存。
+- 远端是唯一事实来源：缓存只存邮件元数据与正文、个人联系人的常用字段，不存附件内容与联系人照片；读取命令一律只读缓存，未就绪时返回 `cache_not_ready`/4 并提示先 `sync`。
+- `ready` 只在一次完整 `sync` 的结尾写入。缓存文件不存在、schema 处于待重建版本、或该 mailbox 的 ready 状态缺失或为 false 时，读取一律返回 `cache_not_ready`/4。受此门控的是 `folder list`、`message list|get|thread`、`message reply|reply-all|draft reply|draft reply-all|mark-read|move`、`attachment save` 和 `contact list|get`；`sync`、`test`、`doctor`、`send`、`draft create`、`contact search` 与 `set`/`config`/`auth` 不依赖缓存。
 - 写命令只修改远端、不修改本地缓存：mark-read 与 move 的效果由下一次 `sync` 通过 `READ_FLAG_CHANGE` 与 delete+create 收敛，因此"写后立即读"可能看到写前快照。
-- schema 变更时强制重建（删除受影响的表并清空 item sync state 与 mailbox ready 标记，下一次 `sync` 全量重取），不做 `ALTER TABLE` + 回填：回填需要新增公开命令与额外代码，而全量重取本来就要重新走一遍 GetItem。
+- 缓存中的文件夹带 `kind`（`mail`/`contacts`）：邮件循环只处理 `mail`，联系人循环只处理 `contacts`，`folder list` 仍只返回邮件文件夹。联系人复用同一张 item sync state 表，因此邮件与联系人各自增量推进、互不影响。
+- schema 变更时强制重建（删除受影响的表并清空 hierarchy/item sync state 与 mailbox ready 标记，下一次 `sync` 全量重取），不做 `ALTER TABLE` + 回填：回填需要新增公开命令与额外代码，而全量重取本来就要重新走一遍 GetItem。
 - 会话字段需要 `(mailbox, conversation_id)` 索引，v2 → v3 即按上述规则重建。
+- v3 → v4 引入文件夹 `kind` 与联系人表，因此重建 `folders`、`contacts`、`messages`，并清空 `hierarchy_sync_states`、`item_sync_states` 与 ready 标记；升级后需要重新执行一次全量 `sync`。
 
 ## 同步工作流与恢复
 
-- 一次 `sync` 的顺序是：`initialize()`（建表，或按上面的规则重建旧 schema 且不置 ready）→ 层级同步 → 逐文件夹条目同步 → 全部成功后 `mark_ready`。
+- 一次 `sync` 的顺序是：`initialize()`（建表，或按上面的规则重建旧 schema 且不置 ready）→ 层级同步 → 逐个邮件文件夹条目同步 → 逐个联系人文件夹条目同步 → 全部成功后 `mark_ready`。
 - 层级同步先读该 mailbox 的 hierarchy sync state，再调用 `SyncFolderHierarchy`；state 为 `None`（首次或刚重建）时是全量枚举。
-- 条目同步按缓存中的文件夹顺序逐个执行：每个文件夹读自己的 item sync state，再调用 IdOnly `SyncFolderItems`。
-- 只有 `CREATE`/`UPDATE` 的邮件需要再取详情，并按每批最多 10 封 `GetItem`（适配器硬上限）；`READ_FLAG_CHANGE` 直接按同步结果更新 `is_read`，不取详情。
-- 每个 `apply_folder_changes` / `apply_message_changes` 是一个事务，事务内同时写入数据与所在作用域的 sync state；不存在覆盖整个 sync 的大事务。因此 sync 可续跑：中途失败留下的是"一致的前缀状态"，下一次 sync 从已持久化的状态继续。
-- 缓存读取命令（`folder list`、`message list|get|thread`）只读缓存、从不触网；`sync` 是唯一写缓存的命令，`send` 与三类草稿命令都不写缓存；`attachment save` 仍从缓存校验消息与附件元数据，但内容要经 EWS 下载。
-- 过期的 sync state 对用户透明自愈：适配器把 EWS 的 `ErrorInvalidSyncStateData` 翻成 `InvalidSyncStateError`，服务层按作用域捕获后从零重来（层级用 `sync_hierarchy(None)`，单个文件夹用 `sync_items(folder, None)`），并让该作用域以 `reset=True` 落地；用户既不会看到错误码，也不需要手动清缓存。
-- `reset=True` 表示把该次 EWS 响应当作该作用域的完整事实：响应中不存在的文件夹行会被删除，并连带删除它的 item sync state 与缓存邮件；某个文件夹中不在响应里的邮件同样会被删除。
+- 层级变更按 folder class 分类：邮件文件夹（`IPF.Note` 系列与 distinguished 邮件文件夹）、联系人文件夹（`IPF.Contact`）会进入缓存，其余（日历、任务等）忽略；隐藏文件夹始终忽略。
+- 条目同步按缓存中的文件夹顺序逐个执行：每个文件夹读自己的 item sync state，再调用 IdOnly `SyncFolderItems`，邮件文件夹和联系人文件夹共用这张状态表。
+- 只有 `CREATE`/`UPDATE` 的邮件需要再取详情，并按每批最多 10 封 `GetItem`（适配器硬上限）；`READ_FLAG_CHANGE` 直接按同步结果更新 `is_read`，不取详情。联系人同理按每批最多 10 条 `GetItem` 取详情，且不处理 read flag。
+- 每个 `apply_folder_changes` / `apply_message_changes` / `apply_contact_changes` 是一个事务，事务内同时写入数据与所在作用域的 sync state；不存在覆盖整个 sync 的大事务。因此 sync 可续跑：中途失败留下的是"一致的前缀状态"，下一次 sync 从已持久化的状态继续。
+- 缓存读取命令（`folder list`、`message list|get|thread`、`contact list|get`）只读缓存、从不触网；`sync` 是唯一写缓存的命令，`send` 与三类草稿命令都不写缓存；`attachment save` 仍从缓存校验消息与附件元数据，但内容要经 EWS 下载；`contact search` 是唯一的联网只读命令，既不读也不写缓存，用于查企业目录（GAL）。
+- 过期的 sync state 对用户透明自愈：适配器把 EWS 的 `ErrorInvalidSyncStateData` 翻成 `InvalidSyncStateError`，服务层按作用域捕获后从零重来（层级用 `sync_hierarchy(None)`，单个文件夹用 `sync_items(folder, None)` / `sync_contacts(folder, None)`），并让该作用域以 `reset=True` 落地；用户既不会看到错误码，也不需要手动清缓存。
+- `reset=True` 表示把该次 EWS 响应当作该作用域的完整事实：响应中不存在的文件夹行会被删除，并连带删除它的 item sync state 与缓存邮件/联系人；某个文件夹中不在响应里的邮件或联系人也同样会被删除。
 - 缓存是"最新已同步视图"，不是时间点一致的快照：sync 中途失败不会回退 `ready` 标记，此时各文件夹可能处于不同进度，下一次成功 sync 后收敛。这是刻意选择——失败留下的是可续跑的一致前缀，而回退 `ready` 会让一次网络抖动把原本可读的缓存变成不可读。
 
 ## CLI 契约
@@ -72,6 +75,9 @@ ews --user U auth set-password|status|delete-password
 ews --user U doctor|test
 ews --user U sync [--progress]
 ews --user U folder list
+ews --user U contact list [--folder F] [--search T] [--offset N] [--limit N]
+ews --user U contact get  <contact-id>
+ews --user U contact search <query> [--limit N]
 ews --user U message list [--folder F] [--read-state S] [--sender A] [--subject-contains T]
                             [--body-contains T] [--received-from D] [--received-before D]
                             [--limit N] [--offset N]
@@ -99,6 +105,8 @@ ews --user U attachment save   <message-id> <attachment-id> --path <file>
 - `--body-file` 只接受显式路径，`-` 表示 stdin（因此该参数启用 `allow_leading_hyphen`）。写命令不回显正文、不输出进度、不做交互确认：调用显式写命令即表示授权执行。
 - 收件人在 CLI 层是 `list[str]`，`send` 的“至少一个收件人”由模型保证，`draft create` 则允许三组收件人都为空；已提供的地址都用 `EmailStr(check_deliverability=False)` 校验（不触发 DNS）。这类失败与其他参数错误一样是 JSON + 退出码 2。
 - `--subject` 在 `send` 中默认为空串，在 `reply`/`reply-all` 中省略表示使用标准回复主题；`mark-read` 默认置为已读，`--unread` 置为未读。
+- `contact list` 默认返回全部联系人文件夹中的缓存联系人，按 `file_as`（缺失时 `display_name`）排序；`--folder` 接受联系人文件夹 ID 或 well-known name（当前只有 `contacts`），`--search` 对显示名、file_as、公司、部门和邮箱做大小写不敏感子串匹配，分页复用 `--limit`（默认 50、最大 200）与 `--offset`。`contact get` 以 EWS contact ID 取单条；两者都只读缓存，未知文件夹或联系人返回 `resource_not_found`/4。
+- `contact search <query>` 是**联网只读**命令，实时查询企业目录（GAL），不属于本地缓存、不受 `ready` 门控；`--limit` 默认 25、范围 1–100，仅做客户端截断（EWS 单次上限 100）。它与 `contact list --search`（搜本地缓存个人联系人）语义不同，文档与 `--help` 都要点明。
 - `set` 与 `auth set-password` 只接受无回显的交互输入（不接受密码参数），密码写入 Keychain；`config list` 返回按 mailbox 排序的全部 profile，`config show` 不显示秘密，`config path` 返回实际配置路径。`config delete` 先删除 Keychain 项再删除 profile，密码缺失视为成功，Keychain 后端失败时保留 profile，且永不删除 SQLite 缓存。`doctor` 做完整诊断并返回 Exchange build/version，`test` 只做一次真实 Inbox 元数据请求。
 
 ### JSON 输出与退出码
@@ -135,6 +143,17 @@ change key 失效归入可重试的 `service_error`，因为重试会重新读�
 - `message list` 默认读取 Inbox，按接收时间倒序；分页用 `offset + limit`（默认 50、最大 200，响应给出下一页 offset）；结构化过滤覆盖文件夹、已读状态、发件人、主题文本、正文文本和接收时间范围，多个条件按 AND 组合。
 - `message get` 返回常用完整元数据、发件人、收件人、抄送/密送、时间、状态、Internet headers、原始正文及其 `text`/`html` 类型和附件元数据。"完整读取"不意味着暴露每个罕用 EWS 属性，也不包含 RFC 822/MIME `.eml` 导出。
 - 文件夹选择器先识别任意 well-known name（`inbox`、`sentitems`、`drafts`、`deleteditems` 等），再回退到 EWS folder ID；读命令与 `message move` 共用。
+- `contact list` / `contact get` 返回联系人的常用字段：`display_name`、`file_as`、姓名各部分、`company_name`、`department`、`job_title`、`office`、`manager`、`profession`、`business_homepage`、带 label 的邮箱/电话/物理地址/IM、`categories`、`notes`、`birthday`、`has_picture`，并附 `parent_folder_id` 与 `folder_name`。`IPF.Contact.DistributionList` 条目与联系人照片不进缓存；未知文件夹或联系人分别返回 `resource_not_found`/4。
+
+## 目录（GAL）搜索
+
+OWA 的 People → Directory 是企业全局地址簿（Active Directory / GAL），不是邮箱文件夹，**无法**用 `SyncFolderItems` 增量同步，也不做全量落库。
+
+- 唯一可用入口是 EWS `ResolveNames`：`SearchScope=ActiveDirectory`、`ReturnFullContactData=True`、`ContactDataShape=AllProperties`，由 `contact search` 触发。
+- 实测该网关上 `DistinguishedFolderId="directory"` 报 `ErrorInvalidOperation`，`FindPeople` 无法浏览 GAL（需 query string + AddressListId，exchangelib 5.6 不提供），`GAL Contacts` 等搜索文件夹也不能用 `FindItems` 枚举；因此不尝试全量扫描/导出。
+- 结果映射为 `DirectoryContact`：显示名、主 SMTP 地址、`mailbox_type`（`Mailbox` / `PublicDL` / `PrivateDL` / `Contact` 等）、名/姓、公司、部门、职位、alias、`directory_id`、带 label 的邮箱/电话/物理地址。邮箱值会去掉 `SMTP:`/`EX:` 路由前缀；`mailbox_type="Mailbox"` 但邮箱是 X500 DN 时，主地址回退到联系人里第一个含 `@` 的地址。
+- `ResolveNames` 单次最多 100 个候选且不可分页，处于该上限时响应标记 `truncated: true`，agent 应细化查询词。无匹配返回 `ok:true` + 空数组，不是错误。
+- 这是唯一不受 `ready` 门控、也不读缓存的读取命令，失败按联网语义映射（`authentication_error`/3、`service_error`/5）。
 
 ## 会话（thread）读取
 
@@ -170,18 +189,21 @@ Exchange 的 conversation 就是这里所说的 thread：`ConversationId` 是会
 ## 测试与质量门槛
 
 - Pyright 用 strict 模式检查 `src` 与测试代码；Ruff 负责格式化、导入排序和 lint；pytest-cov 启用 branch coverage，总覆盖率不得低于 90%。
-- 测试分三层：单元测试覆盖 Pydantic 模型、TOML 配置、分页、过滤、错误映射、正文输入和附件路径冲突；CLI 契约测试用 fake gateway 验证每个命令的 JSON schema、退出码和 stdout/stderr 隔离；适配器测试用受控的第三方对象替身验证 EWS 字段映射、异常转换和附件流式保存。
+- 测试分三层：单元测试覆盖 Pydantic 模型、TOML 配置、分页、过滤、错误映射、正文输入和附件路径冲突；CLI 契约测试用 fake gateway 验证每个命令的 JSON schema、退出码和 stdout/stderr 隔离；适配器测试用受控的第三方对象替身验证 EWS 字段映射（含联系人 label 与索引字段）、异常转换、附件流式保存和文件夹分类。
+- 覆盖联系人缓存、搜索、文件夹 kind 过滤与 v4 重建；schema 升级、联系人变更事务和联系人读取都有独立用例。
 
 ## 兼容性与验收
 
 - 真实 EWS 验收无法在普通 CI 中运行，必须在企业网络内用真实邮箱手工执行：先用 `doctor` 记录 Exchange build/version 并验证 TLS、Keychain 和 NTLM，再验证文件夹遍历、分页与全部过滤器，然后发送唯一主题邮件并验证 list/get/正文/Internet headers；分别保存新邮件、reply 与 reply-all 草稿，确认 Drafts 中存在且没有发信，再执行 `sync` 验证 `is_draft=true`；用预置带附件邮件验证元数据与文件保存，最后验证 mark-read、reply、reply-all 和 move。
+- 联系人验收：`sync` 后 `contact list|get` 的显示名、邮箱 label、电话/地址/IM label 与 OWA 一致；在服务器新增、修改、删除一个联系人后再次 `sync`，确认增量收敛（删除会清掉缓存条目）；确认 `IPF.Contact.DistributionList` 与联系人照片不在结果中。
+- 目录验收：`contact search <姓氏>` 能返回 OWA Directory 中同名同事，`email_address` 是可用的 SMTP 地址（不是 X500 DN），部门/职位/电话/地址与 OWA 一致；`mailbox_type` 能区分个人邮箱与分发列表；对会触碰 100 上限的查询返回 `truncated: true`。
 - 验收中的测试数据一律由人工清理：CLI 不暴露删除能力，验收本身也只使用 `move` 复原，不执行任何删除。
 - 兼容基线：`Microsoft Exchange Server 2019`（`Build=15.2.2562.46, API=Exchange2016`）于 2026-09-12 完整通过上述步骤；其他服务器版本在重复该验收前不做兼容性声明。
 
 ## 当前范围之外
 
 - 邮件删除、转发，以及修改、发送或删除已有草稿；发送附件或草稿附件；以"新邮件"方式实现带附件的回复；附件上传。
-- 日历和联系人；MIME `.eml` 导出（含内嵌邮件附件的导出）。
+- 日历和任务；通讯录写入（新建/修改/删除联系人）；GAL 全量下载/导出（EWS 不允许浏览 GAL，只支持 `ResolveNames` 在线搜索）；联系人分发列表（`IPF.Contact.DistributionList`）与联系人照片；MIME `.eml` 导出（含内嵌邮件附件的导出）。
 - 共享邮箱和 impersonation；默认/当前 profile；Autodiscover；OAuth、Kerberos/GSSAPI 和 Basic Auth。
 - 自定义 CA、禁用 TLS 校验；无桌面 Linux 与 Windows 客户端。
 - 长驻进程、JSONL 协议和异步执行。

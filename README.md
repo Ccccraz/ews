@@ -18,7 +18,8 @@
 | 配置与认证 | `set`、`config list\|show\|delete\|path`、`auth set-password\|status\|delete-password` |
 | 连通性诊断 | `test`、`doctor` |
 | 同步 | `sync`（增量，可续跑） |
-| 读取 | `folder list`、`message list`、`message get`、`message thread` |
+| 读取 | `folder list`、`message list`、`message get`、`message thread`、`contact list`、`contact get` |
+| 目录 | `contact search`（实时查询企业通讯录 GAL，不缓存） |
 | 写入 | `message send`、`message reply`、`message reply-all`、`message draft create\|reply\|reply-all`、`message mark-read`、`message move` |
 | 附件 | `attachment save`（仅下载，流式，拒绝覆盖） |
 
@@ -84,8 +85,11 @@ ews --user agent message thread <message-id>
 | `set` | 交互式新增或按 mailbox 更新 profile | 否 | 否 |
 | `test` | 一次真实 Inbox 元数据请求 | 是 | 否 |
 | `doctor` | 校验配置、Keychain、系统 TLS、NTLM | 是 | 否 |
-| `sync [--progress]` | 增量同步进本地缓存 | 是 | 否（写缓存） |
+| `sync [--progress]` | 增量同步进本地缓存（邮件 + 个人联系人） | 是 | 否（写缓存） |
 | `folder list` | 文件夹树 + folder ID + well-known name | 是 | 是 |
+| `contact list` | 联系人列表（文件夹/文本过滤 + 分页） | 是 | 是 |
+| `contact get <id>` | 单条联系人常用字段 | 是 | 是 |
+| `contact search <query>` | 实时搜索企业通讯录 GAL | 是 | 否（联网） |
 | `message list` | 结构化过滤 + 分页 | 是 | 是 |
 | `message get <id>` | 单封详情（正文、headers、附件元数据） | 是 | 是 |
 | `message thread <id>` | 整串会话 | 是 | 是 |
@@ -101,6 +105,10 @@ ews --user agent message thread <message-id>
 | `auth set-password` / `status` / `delete-password` | 管理所选 profile 的 Keychain 密码 | 是 | 否 |
 
 `message list` 的过滤器可任意组合（AND）：`--folder`、`--read-state read|unread|any`、`--sender`、`--subject-contains`、`--body-contains`、`--received-from`、`--received-before`，分页用 `--limit`（默认 50、最大 200）与 `--offset`。`message thread` 支持 `--limit`（默认 20、最大 200）与 `--offset`。
+
+`contact list` 支持 `--folder`（联系人文件夹 ID 或 `contacts`）、`--search`（匹配显示名、公司、部门与邮箱，大小写不敏感）与同样的 `--limit`/`--offset`；默认返回全部联系人文件夹并按 `file_as` 排序。`contact get <id>` 返回单条联系人的常用字段（姓名、公司、部门、职位、邮箱/电话/地址/IM、备注、生日等）。
+
+`contact search <query>` 是**唯一联网的读取命令**，用于实时查询企业通讯录（GAL / OWA People → Directory，对应 EWS `ResolveNames`）：按姓名片段、alias 或邮箱前缀匹配，返回显示名、主 SMTP 地址、`mailbox_type`（`Mailbox` / `PublicDL` / `PrivateDL` 等）、名/姓、公司、部门、职位、带 label 的邮箱/电话/地址。它不读也不写本地缓存、不需要先 `sync`；`--limit` 默认 25、最大 100，服务端单次上限 100，触顶时返回 `truncated: true`，应细化查询。典型用法：先 `contact search` 拿到邮箱地址，再用于发信 / 回复。
 
 写命令的正文通过 `--body-file <path>` 提供（`-` 表示 stdin），并用 `--content-type text|html`（默认 `text`）指定正文类型。`message draft create` 允许暂不提供任何收件人。
 
@@ -163,8 +171,9 @@ username = "operator"
 
 ## 本地缓存与同步
 
-- 缓存是 SQLite 文件 `$HOME/.config/taskseed/ews/cache.db`，只存邮件元数据与正文，不存附件内容。
-- 读取类命令**只读缓存**；缓存在完成一次完整 `sync` 之前不可读，此时返回 `cache_not_ready`/4 并提示先 `sync`。
+- 缓存是 SQLite 文件 `$HOME/.config/taskseed/ews/cache.db`，只存邮件元数据与正文以及个人联系人的常用字段，不存附件内容与联系人照片。
+- 读取类命令**只读缓存**；缓存在完成一次完整 `sync` 之前不可读，此时返回 `cache_not_ready`/4 并提示先 `sync`。受此门控的包括 `contact list|get`。`contact search` 是例外：它实时查企业通讯录，不读也不写缓存。
+- `sync` 同时同步邮件文件夹与个人联系人文件夹（`IPF.Contact`），写入同一份缓存并共用一个 `ready` 标记。
 - 写入类命令**只改远端、不改缓存**：`mark-read` 与 `move` 的效果由下一次 `sync` 收敛，所以「写后立即读」可能看到写前快照。
 - `sync` 是增量的、按文件夹逐个推进，并且**可续跑**：中途失败只留下一致的前缀状态，下一次从断点继续；服务端 sync state 过期时会自动重新全量枚举该范围，对使用者透明。
 - 缓存代表「最近一次已同步的视图」，不是某一时刻的一致快照；schema 升级会强制重建缓存，需要重新 `sync`。
@@ -183,7 +192,8 @@ username = "operator"
 
 - 仅 macOS；支持多个独立邮箱 profile，但不支持共享邮箱与 impersonation，也没有默认或当前 profile。
 - 不支持 Autodiscover、自定义 CA、跳过 TLS 校验。
-- 首版不含：邮件删除、转发、修改/发送/删除已有草稿、草稿或发送附件、日历与联系人、MIME `.eml` 导出。
+- 首版不含：邮件删除、转发、修改/发送/删除已有草稿、草稿或发送附件、日历与任务、MIME `.eml` 导出。
+- 通讯录：个人联系人（`IPF.Contact`）只读并有本地缓存；企业通讯录（GAL）通过 `contact search` 实时查询，**不做全量下载/导出**（EWS 不允许浏览 GAL）。不含联系人写命令、联系人分发列表（`IPF.Contact.DistributionList`，但 GAL 搜索会返回分发列表条目）与联系人照片。
 - `folder list` 对没有 EWS distinguished name 的文件夹返回 `well_known_name: null`（例如自定义文件夹、主邮箱里名为 `Archive` 的文件夹），这些文件夹只能用 folder ID 选择。
 
 ## 开发

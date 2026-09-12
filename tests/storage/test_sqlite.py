@@ -8,10 +8,16 @@ from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine, select
 
 from ews.models import (
+    Contact,
+    ContactChange,
+    ContactChangeKind,
+    ContactEmail,
+    ContactListQuery,
     FlagStatus,
     Folder,
     FolderChange,
     FolderChangeKind,
+    FolderKind,
     MessageChange,
     MessageChangeKind,
     MessageDetail,
@@ -26,6 +32,7 @@ from ews.storage import (
 )
 from ews.storage.sqlite import (
     CacheMetadataRecord,
+    ContactRecord,
     ItemSyncStateRecord,
     MailboxStateRecord,
     MessageRecord,
@@ -50,7 +57,7 @@ def test_initialize_is_explicit_and_idempotent(tmp_path: Path) -> None:
     with _session(store) as session:
         metadata = session.get(CacheMetadataRecord, "schema_version")
         assert metadata is not None
-        assert metadata.value == "3"
+        assert metadata.value == "4"
 
 
 def test_initialize_rejects_unknown_schema_version(tmp_path: Path) -> None:
@@ -70,7 +77,7 @@ def test_initialize_rebuilds_v1_without_marking_mailbox_ready(tmp_path: Path) ->
     with _session(store) as session:
         metadata = session.get(CacheMetadataRecord, "schema_version")
         assert metadata is not None
-        assert metadata.value == "3"
+        assert metadata.value == "4"
     with pytest.raises(MailboxCacheNotReadyError):
         store.require_ready("agent@example.com")
 
@@ -100,11 +107,53 @@ def test_initialize_rebuilds_a_v2_cache_and_drops_cached_messages(tmp_path: Path
     with _session(store) as session:
         metadata = session.get(CacheMetadataRecord, "schema_version")
         assert metadata is not None
-        assert metadata.value == "3"
+        assert metadata.value == "4"
         assert session.exec(select(MessageRecord)).all() == []
         assert session.exec(select(ItemSyncStateRecord)).all() == []
         assert session.exec(select(MailboxStateRecord)).all() == []
-    assert store.list_folders("agent@example.com") == [folder]
+    assert store.list_folders("agent@example.com") == []
+
+
+def test_initialize_rebuilds_a_v3_cache_and_drops_folders_messages_and_contacts(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    folder = _folder("inbox-id", "Inbox")
+    store.replace_folders("agent@example.com", [folder])
+    message = _message()
+    store.upsert_messages("agent@example.com", [message])
+    contact = _contact("contact-id")
+    store.apply_contact_changes(
+        "agent@example.com",
+        "contact-folder-id",
+        [
+            ContactChange(
+                kind=ContactChangeKind.CREATE,
+                contact_id=contact.id,
+                change_key=contact.change_key,
+            )
+        ],
+        {contact.id: contact},
+        "contact-state-1",
+        reset=False,
+    )
+    store.mark_ready("agent@example.com")
+    _set_schema_version(store, "3")
+
+    with pytest.raises(MailboxCacheNotReadyError):
+        store.require_ready("agent@example.com")
+
+    store.initialize()
+
+    with _session(store) as session:
+        metadata = session.get(CacheMetadataRecord, "schema_version")
+        assert metadata is not None
+        assert metadata.value == "4"
+        assert session.exec(select(MessageRecord)).all() == []
+        assert session.exec(select(ContactRecord)).all() == []
+        assert session.exec(select(ItemSyncStateRecord)).all() == []
+        assert session.exec(select(MailboxStateRecord)).all() == []
+    assert store.list_folders("agent@example.com") == []
 
 
 def test_replace_folders_preserves_order_and_isolates_mailboxes(tmp_path: Path) -> None:
@@ -280,7 +329,14 @@ def test_sync_states_changes_and_folder_delete_are_atomic_by_scope(tmp_path: Pat
     folder = _folder("inbox-id", "Inbox")
     folder_counts = store.apply_folder_changes(
         "agent@example.com",
-        [FolderChange(kind=FolderChangeKind.CREATE, folder_id=folder.id, folder=folder)],
+        [
+            FolderChange(
+                kind=FolderChangeKind.CREATE,
+                folder_id=folder.id,
+                folder=folder,
+                folder_kind=FolderKind.MAIL,
+            )
+        ],
         "hierarchy-state",
         reset=True,
     )
@@ -381,7 +437,14 @@ def test_folder_change_for_an_existing_folder_is_not_counted_as_created(
 
     counts = store.apply_folder_changes(
         "agent@example.com",
-        [FolderChange(kind=FolderChangeKind.CREATE, folder_id=folder.id, folder=folder)],
+        [
+            FolderChange(
+                kind=FolderChangeKind.CREATE,
+                folder_id=folder.id,
+                folder=folder,
+                folder_kind=FolderKind.MAIL,
+            )
+        ],
         "hierarchy-state",
         reset=False,
     )
@@ -586,6 +649,171 @@ def test_thread_query_spans_folders_in_reading_order(tmp_path: Path) -> None:
     assert beyond_more is False
 
 
+def test_contact_round_trip_search_and_folder_filtering(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    mail = _folder("inbox-id", "Inbox")
+    contacts = _folder("contacts-id", "Contacts")
+    store.apply_folder_changes(
+        "agent@example.com",
+        [
+            FolderChange(
+                kind=FolderChangeKind.CREATE,
+                folder_id=mail.id,
+                folder=mail,
+                folder_kind=FolderKind.MAIL,
+            ),
+            FolderChange(
+                kind=FolderChangeKind.CREATE,
+                folder_id=contacts.id,
+                folder=contacts,
+                folder_kind=FolderKind.CONTACTS,
+            ),
+        ],
+        "hierarchy-state",
+        reset=True,
+        well_known_folder_ids={"contacts": "contacts-id"},
+    )
+    contact = _contact("contact-id", display_name="Alice Zhang")
+    counts = store.apply_contact_changes(
+        "agent@example.com",
+        "contacts-id",
+        [
+            ContactChange(
+                kind=ContactChangeKind.CREATE,
+                contact_id=contact.id,
+                change_key=contact.change_key,
+            )
+        ],
+        {contact.id: contact},
+        "contact-state",
+        reset=False,
+    )
+
+    assert counts.created == 1
+    page, has_more = store.list_contacts("agent@example.com", ContactListQuery())
+    assert has_more is False
+    assert [item.id for item in page] == ["contact-id"]
+    assert page[0].folder_name == "Contacts"
+    assert page[0].emails == [ContactEmail(label="EmailAddress1", address="alice@example.com")]
+
+    by_name, _ = store.list_contacts("agent@example.com", ContactListQuery(folder="contacts"))
+    assert [item.id for item in by_name] == ["contact-id"]
+
+    by_search, _ = store.list_contacts("agent@example.com", ContactListQuery(search="ALICE@"))
+    assert [item.id for item in by_search] == ["contact-id"]
+
+    unrelated, _ = store.list_contacts("agent@example.com", ContactListQuery(folder="inbox-id"))
+    assert unrelated == []
+
+    assert store.get_contact("agent@example.com", "contact-id") == page[0]
+    assert store.list_folders("agent@example.com", FolderKind.MAIL)[0].id == "inbox-id"
+    assert store.list_folders("agent@example.com", FolderKind.CONTACTS)[0].id == "contacts-id"
+    assert store.folder_exists("agent@example.com", "contacts", FolderKind.CONTACTS) is True
+    assert store.folder_exists("agent@example.com", "contacts", FolderKind.MAIL) is False
+
+
+def test_contact_changes_delete_reset_and_folder_removal(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    contacts = _folder("contacts-id", "Contacts")
+    store.apply_folder_changes(
+        "agent@example.com",
+        [
+            FolderChange(
+                kind=FolderChangeKind.CREATE,
+                folder_id=contacts.id,
+                folder=contacts,
+                folder_kind=FolderKind.CONTACTS,
+            )
+        ],
+        "hierarchy-state",
+        reset=True,
+    )
+    contact = _contact("contact-id")
+    store.apply_contact_changes(
+        "agent@example.com",
+        "contacts-id",
+        [
+            ContactChange(
+                kind=ContactChangeKind.CREATE, contact_id=contact.id, change_key=contact.change_key
+            )
+        ],
+        {contact.id: contact},
+        "contact-state",
+        reset=False,
+    )
+
+    renamed = contact.model_copy(update={"display_name": "Renamed"})
+    updated = store.apply_contact_changes(
+        "agent@example.com",
+        "contacts-id",
+        [
+            ContactChange(
+                kind=ContactChangeKind.UPDATE, contact_id=contact.id, change_key="change-2"
+            )
+        ],
+        {contact.id: renamed},
+        "contact-state-2",
+        reset=False,
+    )
+    assert updated.updated == 1
+    assert store.get_contact("agent@example.com", "contact-id") == renamed.model_copy(
+        update={"folder_name": "Contacts"}
+    )
+
+    store.apply_contact_changes(
+        "agent@example.com",
+        "contacts-id",
+        [],
+        {},
+        "contact-state-3",
+        reset=True,
+    )
+    assert store.get_contact("agent@example.com", "contact-id") is None
+
+    store.apply_contact_changes(
+        "agent@example.com",
+        "contacts-id",
+        [
+            ContactChange(
+                kind=ContactChangeKind.CREATE, contact_id=contact.id, change_key=contact.change_key
+            )
+        ],
+        {contact.id: contact},
+        "contact-state-4",
+        reset=False,
+    )
+    deleted = store.apply_contact_changes(
+        "agent@example.com",
+        "contacts-id",
+        [ContactChange(kind=ContactChangeKind.DELETE, contact_id=contact.id)],
+        {},
+        "contact-state-5",
+        reset=False,
+    )
+    assert deleted.deleted == 1
+    assert store.get_contact("agent@example.com", "contact-id") is None
+
+    store.apply_contact_changes(
+        "agent@example.com",
+        "contacts-id",
+        [
+            ContactChange(
+                kind=ContactChangeKind.CREATE, contact_id=contact.id, change_key=contact.change_key
+            )
+        ],
+        {contact.id: contact},
+        "contact-state-6",
+        reset=False,
+    )
+    store.apply_folder_changes(
+        "agent@example.com",
+        [FolderChange(kind=FolderChangeKind.DELETE, folder_id="contacts-id")],
+        "hierarchy-state-2",
+        reset=False,
+    )
+    assert store.get_contact("agent@example.com", "contact-id") is None
+
+
 def _folder(folder_id: str, name: str, *, parent_id: str | None = None) -> Folder:
     return Folder(
         id=folder_id,
@@ -594,6 +822,18 @@ def _folder(folder_id: str, name: str, *, parent_id: str | None = None) -> Folde
         well_known_name=name.casefold() if parent_id is None else None,
         total_count=12,
         unread_count=3,
+    )
+
+
+def _contact(contact_id: str = "contact-id", *, display_name: str = "Alice Zhang") -> Contact:
+    return Contact(
+        id=contact_id,
+        change_key="change-1",
+        parent_folder_id="contacts-id",
+        display_name=display_name,
+        file_as=display_name,
+        company_name="Example",
+        emails=[ContactEmail(label="EmailAddress1", address="alice@example.com")],
     )
 
 

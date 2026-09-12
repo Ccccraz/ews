@@ -1,5 +1,20 @@
 from ews.models.attachment import AttachmentSaveResult
 from ews.models.connection_test import ConnectionTestResult
+from ews.models.contact import (
+    Contact,
+    ContactAddress,
+    ContactEmail,
+    ContactGetResult,
+    ContactIm,
+    ContactListQuery,
+    ContactListResult,
+    ContactPhone,
+)
+from ews.models.directory import (
+    DirectoryContact,
+    DirectorySearchQuery,
+    DirectorySearchResult,
+)
 from ews.models.doctor import DoctorCheck, DoctorResult
 from ews.models.mailbox import (
     AttachmentMetadata,
@@ -22,8 +37,13 @@ from ews.models.outgoing import DraftMessage, OutgoingMessage, OutgoingReply
 from ews.models.profile import Profile, Profiles
 from ews.models.server import Server
 from ews.models.sync import (
+    ContactChange,
+    ContactChangeKind,
+    ContactSyncCounts,
+    ContactSyncResult,
     FolderChange,
     FolderChangeKind,
+    FolderKind,
     FolderSyncCounts,
     FolderSyncResult,
     MailboxSyncResult,
@@ -46,14 +66,30 @@ __all__ = [
     "AttachmentMetadata",
     "AttachmentSaveResult",
     "ConnectionTestResult",
+    "Contact",
+    "ContactAddress",
+    "ContactChange",
+    "ContactChangeKind",
+    "ContactEmail",
+    "ContactGetResult",
+    "ContactIm",
+    "ContactListQuery",
+    "ContactListResult",
+    "ContactPhone",
+    "ContactSyncCounts",
+    "ContactSyncResult",
     "DoctorCheck",
     "DoctorResult",
+    "DirectoryContact",
+    "DirectorySearchQuery",
+    "DirectorySearchResult",
     "DraftMessage",
     "FlagStatus",
     "Folder",
     "FolderListResult",
     "FolderChange",
     "FolderChangeKind",
+    "FolderKind",
     "FolderSyncCounts",
     "FolderSyncResult",
     "Importance",

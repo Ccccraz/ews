@@ -5,6 +5,7 @@ from pydantic import BaseModel, JsonValue, ValidationError
 
 from ews.application import (
     AttachmentNotFoundError,
+    ContactNotFoundError,
     DestinationExistsError,
     FolderNotFoundError,
     InvalidDestinationError,
@@ -68,7 +69,7 @@ def run_read[ResultT: BaseModel](
             f"Mailbox cache is not ready; run ews --user {context.user} sync",
             4,
         )
-    except (FolderNotFoundError, MessageNotFoundError) as error:
+    except (FolderNotFoundError, MessageNotFoundError, ContactNotFoundError) as error:
         return fail("resource_not_found", str(error), 4)
     except MailboxStoreError as error:
         return fail("cache_error", str(error), 2)

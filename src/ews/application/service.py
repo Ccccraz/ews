@@ -5,6 +5,7 @@ from pydantic import SecretStr
 
 from ews.application.errors import (
     AttachmentNotFoundError,
+    ContactNotFoundError,
     FolderNotFoundError,
     InvalidSyncStateError,
     MessageNotFoundError,
@@ -17,8 +18,17 @@ from ews.config import PasswordStore, ProfileNotFoundError, ProfileStore
 from ews.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
+    Contact,
+    ContactChangeKind,
+    ContactGetResult,
+    ContactListQuery,
+    ContactListResult,
+    ContactSyncCounts,
+    DirectorySearchQuery,
+    DirectorySearchResult,
     DoctorResult,
     DraftMessage,
+    FolderKind,
     FolderListResult,
     MailboxSyncResult,
     MessageChangeKind,
@@ -127,8 +137,9 @@ class MailboxApplicationService:
             well_known_folder_ids=hierarchy.well_known_folder_ids,
         )
 
-        folders = self._store.list_folders(mailbox)
-        folder_total = len(folders)
+        folders = self._store.list_folders(mailbox, FolderKind.MAIL)
+        contact_folders = self._store.list_folders(mailbox, FolderKind.CONTACTS)
+        folder_total = len(folders) + len(contact_folders)
         if progress is not None:
             progress.hierarchy_completed(folder_total)
 
@@ -170,11 +181,45 @@ class MailboxApplicationService:
             if progress is not None:
                 progress.folder_completed(applied)
 
+        contact_counts = ContactSyncCounts()
+        for index, folder in enumerate(contact_folders, start=len(folders) + 1):
+            if progress is not None:
+                progress.folder_started(folder.name, index, folder_total)
+            contact_state = self._store.get_item_sync_state(mailbox, folder.id)
+            contact_reset = contact_state is None
+            try:
+                contact_result = self._gateway.sync_contacts(
+                    profile, password, folder.id, contact_state
+                )
+            except InvalidSyncStateError:
+                contact_result = self._gateway.sync_contacts(profile, password, folder.id, None)
+                contact_reset = True
+
+            contact_ids = [
+                (change.contact_id, change.change_key)
+                for change in contact_result.changes
+                if change.kind in {ContactChangeKind.CREATE, ContactChangeKind.UPDATE}
+                and change.change_key is not None
+            ]
+            fetched_contacts = self._fetch_contacts_in_batches(profile, password, contact_ids)
+            applied_contacts = self._store.apply_contact_changes(
+                mailbox,
+                folder.id,
+                contact_result.changes,
+                {contact.id: contact for contact in fetched_contacts},
+                contact_result.sync_state,
+                reset=contact_reset,
+            )
+            contact_counts = _add_contact_counts(contact_counts, applied_contacts)
+            if progress is not None:
+                progress.folder_completed(applied_contacts)
+
         self._store.mark_ready(mailbox)
         result = MailboxSyncResult(
             user=profile.user.username,
             folders=folder_counts,
             messages=message_counts,
+            contacts=contact_counts,
         )
         if progress is not None:
             progress.sync_completed(result)
@@ -211,6 +256,46 @@ class MailboxApplicationService:
         profile = self._load_profile(selected_user)
         message = self._require_cached_message(profile, message_id)
         return MessageGetResult(user=profile.user.username, message=message)
+
+    def list_contacts(self, selected_user: str, query: ContactListQuery) -> ContactListResult:
+        profile = self._load_profile(selected_user)
+        mailbox = str(profile.user.mailbox)
+        self._store.require_ready(mailbox)
+        if query.folder is not None and not self._store.folder_exists(
+            mailbox, query.folder, FolderKind.CONTACTS
+        ):
+            raise FolderNotFoundError(f"Folder not found: {query.folder}")
+        contacts, has_more = self._store.list_contacts(mailbox, query)
+        return ContactListResult(
+            user=profile.user.username,
+            contacts=contacts,
+            pagination=Pagination(
+                offset=query.offset,
+                limit=query.limit,
+                has_more=has_more,
+                next_offset=query.offset + query.limit if has_more else None,
+            ),
+        )
+
+    def get_contact(self, selected_user: str, contact_id: str) -> ContactGetResult:
+        profile = self._load_profile(selected_user)
+        contact = self._require_cached_contact(profile, contact_id)
+        return ContactGetResult(user=profile.user.username, contact=contact)
+
+    def search_directory(
+        self, selected_user: str, query: DirectorySearchQuery
+    ) -> DirectorySearchResult:
+        """Search the live Exchange directory; the local cache is never read."""
+        profile = self._load_profile(selected_user)
+        password = self._password_store.get(profile)
+        result = self._gateway.search_directory(profile, password, query.query)
+        contacts = result.contacts[: query.limit]
+        return DirectorySearchResult(
+            user=result.user,
+            query=result.query,
+            contacts=contacts,
+            truncated=result.truncated or len(result.contacts) > query.limit,
+        )
 
     def get_thread(
         self, selected_user: str, message_id: str, query: MessageThreadQuery
@@ -340,6 +425,14 @@ class MailboxApplicationService:
             raise MessageNotFoundError(f"Message not found: {message_id}")
         return message
 
+    def _require_cached_contact(self, profile: Profile, contact_id: str) -> Contact:
+        mailbox = str(profile.user.mailbox)
+        self._store.require_ready(mailbox)
+        contact = self._store.get_contact(mailbox, contact_id)
+        if contact is None:
+            raise ContactNotFoundError(f"Contact not found: {contact_id}")
+        return contact
+
     def _fetch_in_batches(
         self,
         profile: Profile,
@@ -356,6 +449,18 @@ class MailboxApplicationService:
                 progress.messages_fetched(len(batch))
         return fetched
 
+    def _fetch_contacts_in_batches(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        contact_ids: Sequence[tuple[str, str]],
+    ) -> list[Contact]:
+        fetched: list[Contact] = []
+        for start in range(0, len(contact_ids), _GET_ITEM_BATCH_SIZE):
+            batch = contact_ids[start : start + _GET_ITEM_BATCH_SIZE]
+            fetched.extend(self._gateway.fetch_contacts(profile, password, batch))
+        return fetched
+
     def _load_profile(self, selected_user: str) -> Profile:
         try:
             return self._profile_store.load(selected_user)
@@ -369,4 +474,12 @@ def _add_message_counts(left: MessageSyncCounts, right: MessageSyncCounts) -> Me
         updated=left.updated + right.updated,
         deleted=left.deleted + right.deleted,
         read_state_changed=left.read_state_changed + right.read_state_changed,
+    )
+
+
+def _add_contact_counts(left: ContactSyncCounts, right: ContactSyncCounts) -> ContactSyncCounts:
+    return ContactSyncCounts(
+        created=left.created + right.created,
+        updated=left.updated + right.updated,
+        deleted=left.deleted + right.deleted,
     )

@@ -15,6 +15,9 @@ from ews.config import PasswordStore, ProfileStore
 from ews.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
+    Contact,
+    ContactSyncResult,
+    DirectorySearchResult,
     DraftMessage,
     FlagStatus,
     Folder,
@@ -70,6 +73,31 @@ class ThreadGateway:
     ) -> list[MessageDetail]:
         del profile, password, message_ids
         return self._unexpected("fetch_messages")
+
+    def sync_contacts(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        folder_id: str,
+        sync_state: str | None,
+    ) -> ContactSyncResult:
+        del profile, password, folder_id, sync_state
+        raise AssertionError("Not used")
+
+    def fetch_contacts(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        contact_ids: Sequence[tuple[str, str]],
+    ) -> list[Contact]:
+        del profile, password, contact_ids
+        raise AssertionError("Not used")
+
+    def search_directory(
+        self, profile: Profile, password: SecretStr, query: str
+    ) -> DirectorySearchResult:
+        del profile, password, query
+        raise AssertionError("Not used")
 
     def send_message(
         self, profile: Profile, password: SecretStr, message: OutgoingMessage

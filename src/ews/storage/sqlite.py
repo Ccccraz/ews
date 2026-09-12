@@ -2,7 +2,7 @@
 
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import ClassVar
 
@@ -14,10 +14,20 @@ from sqlmodel import Field, Session, SQLModel, col, create_engine, delete, selec
 
 from ews.models import (
     AttachmentMetadata,
+    Contact,
+    ContactAddress,
+    ContactChange,
+    ContactChangeKind,
+    ContactEmail,
+    ContactIm,
+    ContactListQuery,
+    ContactPhone,
+    ContactSyncCounts,
     FlagStatus,
     Folder,
     FolderChange,
     FolderChangeKind,
+    FolderKind,
     FolderSyncCounts,
     Importance,
     InternetHeader,
@@ -31,8 +41,8 @@ from ews.models import (
     ReadState,
 )
 
-_SCHEMA_VERSION = "3"
-_REBUILD_SCHEMA_VERSIONS = {"1", "2"}
+_SCHEMA_VERSION = "4"
+_REBUILD_SCHEMA_VERSIONS = {"1", "2", "3"}
 _SCHEMA_VERSION_KEY = "schema_version"
 
 _ADDRESS_ADAPTER = TypeAdapter[MailboxAddress | None](MailboxAddress | None)
@@ -40,6 +50,10 @@ _ADDRESS_LIST_ADAPTER = TypeAdapter(list[MailboxAddress])
 _HEADER_LIST_ADAPTER = TypeAdapter(list[InternetHeader])
 _ATTACHMENT_LIST_ADAPTER = TypeAdapter(list[AttachmentMetadata])
 _CATEGORY_LIST_ADAPTER = TypeAdapter(list[str])
+_CONTACT_EMAIL_LIST_ADAPTER = TypeAdapter(list[ContactEmail])
+_CONTACT_PHONE_LIST_ADAPTER = TypeAdapter(list[ContactPhone])
+_CONTACT_ADDRESS_LIST_ADAPTER = TypeAdapter(list[ContactAddress])
+_CONTACT_IM_LIST_ADAPTER = TypeAdapter(list[ContactIm])
 
 
 class CacheMetadataRecord(SQLModel, table=True):
@@ -58,8 +72,42 @@ class FolderRecord(SQLModel, table=True):
     parent_id: str | None = None
     name: str
     well_known_name: str | None = None
+    kind: str = FolderKind.MAIL.value
     total_count: int
     unread_count: int
+
+
+class ContactRecord(SQLModel, table=True):
+    __tablename__: ClassVar[str] = "contacts"  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    mailbox: str = Field(primary_key=True)
+    id: str = Field(primary_key=True)
+    change_key: str
+    parent_folder_id: str
+    display_name: str
+    file_as: str | None = None
+    given_name: str | None = None
+    middle_name: str | None = None
+    surname: str | None = None
+    nickname: str | None = None
+    initials: str | None = None
+    generation: str | None = None
+    company_name: str | None = None
+    department: str | None = None
+    job_title: str | None = None
+    office: str | None = None
+    manager: str | None = None
+    profession: str | None = None
+    business_homepage: str | None = None
+    emails_json: str
+    phones_json: str
+    addresses_json: str
+    im_addresses_json: str
+    categories_json: str = "[]"
+    notes: str | None = None
+    birthday: str | None = None
+    has_picture: bool = False
+    search_text: str = ""
 
 
 class MessageRecord(SQLModel, table=True):
@@ -174,10 +222,13 @@ class SqliteMailboxStore:
             raise MailboxStoreError(f"Unable to initialize mailbox cache: {self.path}") from error
 
     def _rebuild_older_schema(self) -> None:
-        """Drop cached messages so the next synchronization refills every new column."""
+        """Drop the changed tables so the next synchronization refills them all."""
         with self._engine.begin() as connection:
             connection.execute(text("DROP TABLE IF EXISTS messages"))
+            connection.execute(text("DROP TABLE IF EXISTS folders"))
+            connection.execute(text("DROP TABLE IF EXISTS contacts"))
         with Session(self._engine) as session:
+            session.exec(delete(HierarchySyncStateRecord))
             session.exec(delete(ItemSyncStateRecord))
             session.exec(delete(MailboxStateRecord))
             session.commit()
@@ -264,13 +315,16 @@ class SqliteMailboxStore:
                     folder = change.folder
                     if folder is None:
                         raise MailboxStoreError("Folder change payload is missing")
+                    folder_kind = change.folder_kind
+                    if folder_kind is None:
+                        raise MailboxStoreError("Folder change payload is missing a kind")
                     position = existing.position if existing is not None else next_position
                     if existing is None:
                         next_position += 1
                         created += 1
                     elif change.kind is FolderChangeKind.UPDATE:
                         updated += 1
-                    session.merge(_folder_row(mailbox_key, position, folder))
+                    session.merge(_folder_row(mailbox_key, position, folder, folder_kind))
 
                 # A supplied id map is the only source of well-known names: clear every name
                 # first, so a folder that no longer resolves loses a stale one, then apply
@@ -361,21 +415,80 @@ class SqliteMailboxStore:
             read_state_changed=read_state_changed,
         )
 
+    def apply_contact_changes(
+        self,
+        mailbox: str,
+        folder_id: str,
+        changes: Sequence[ContactChange],
+        contacts: Mapping[str, Contact],
+        sync_state: str,
+        *,
+        reset: bool,
+    ) -> ContactSyncCounts:
+        """Apply one folder's contact changes and state in one transaction."""
+        mailbox_key = _mailbox_key(mailbox)
+        created = updated = deleted_count = 0
+        try:
+            with self._session() as session:
+                if reset:
+                    session.exec(
+                        delete(ContactRecord).where(
+                            col(ContactRecord.mailbox) == mailbox_key,
+                            col(ContactRecord.parent_folder_id) == folder_id,
+                        )
+                    )
+                for change in changes:
+                    existing = session.get(ContactRecord, (mailbox_key, change.contact_id))
+                    if change.kind is ContactChangeKind.DELETE:
+                        if existing is not None:
+                            session.delete(existing)
+                            deleted_count += 1
+                    else:
+                        contact = contacts.get(change.contact_id)
+                        if contact is None:
+                            raise MailboxStoreError(
+                                f"Fetched contact is missing: {change.contact_id}"
+                            )
+                        session.merge(_contact_row(mailbox_key, contact))
+                        if change.kind is ContactChangeKind.CREATE:
+                            created += 1
+                        else:
+                            updated += 1
+                session.merge(
+                    ItemSyncStateRecord(
+                        mailbox=mailbox_key, folder_id=folder_id, sync_state=sync_state
+                    )
+                )
+                session.commit()
+        except MailboxStoreError:
+            raise
+        except SQLAlchemyError as error:
+            raise MailboxStoreError("Unable to apply contact synchronization") from error
+        return ContactSyncCounts(created=created, updated=updated, deleted=deleted_count)
+
     def replace_folders(self, mailbox: str, folders: Sequence[Folder]) -> None:
         """Atomically replace one mailbox's complete folder snapshot."""
         changes = [
-            FolderChange(kind=FolderChangeKind.CREATE, folder_id=folder.id, folder=folder)
+            FolderChange(
+                kind=FolderChangeKind.CREATE,
+                folder_id=folder.id,
+                folder=folder,
+                folder_kind=FolderKind.MAIL,
+            )
             for folder in folders
         ]
         self.apply_folder_changes(mailbox, changes, "snapshot", reset=True)
 
-    def list_folders(self, mailbox: str) -> list[Folder]:
+    def list_folders(self, mailbox: str, kind: FolderKind = FolderKind.MAIL) -> list[Folder]:
         mailbox_key = _mailbox_key(mailbox)
         try:
             with self._session() as session:
                 rows = session.exec(
                     select(FolderRecord)
-                    .where(col(FolderRecord.mailbox) == mailbox_key)
+                    .where(
+                        col(FolderRecord.mailbox) == mailbox_key,
+                        col(FolderRecord.kind) == kind.value,
+                    )
                     .order_by(col(FolderRecord.position))
                 ).all()
                 ids = {row.id for row in rows}
@@ -392,7 +505,9 @@ class SqliteMailboxStore:
         mailbox_key = _mailbox_key(mailbox)
         try:
             with self._session() as session:
-                folder_id = self._resolve_folder_id(session, mailbox_key, query.folder)
+                folder_id = self._resolve_folder_id(
+                    session, mailbox_key, query.folder, FolderKind.MAIL
+                )
                 if folder_id is None:
                     return [], False
                 statement = select(MessageRecord).where(
@@ -439,15 +554,17 @@ class SqliteMailboxStore:
         except SQLAlchemyError as error:
             raise MailboxStoreError("Unable to list cached messages") from error
 
-    def folder_exists(self, mailbox: str, folder: str) -> bool:
-        return self.resolve_folder_id(mailbox, folder) is not None
+    def folder_exists(self, mailbox: str, folder: str, kind: FolderKind = FolderKind.MAIL) -> bool:
+        return self.resolve_folder_id(mailbox, folder, kind) is not None
 
-    def resolve_folder_id(self, mailbox: str, folder: str) -> str | None:
+    def resolve_folder_id(
+        self, mailbox: str, folder: str, kind: FolderKind = FolderKind.MAIL
+    ) -> str | None:
         """Resolve a folder selector to its cached EWS folder ID."""
         mailbox_key = _mailbox_key(mailbox)
         try:
             with self._session() as session:
-                return self._resolve_folder_id(session, mailbox_key, folder)
+                return self._resolve_folder_id(session, mailbox_key, folder, kind)
         except SQLAlchemyError as error:
             raise MailboxStoreError("Unable to resolve cached folder") from error
 
@@ -471,6 +588,62 @@ class SqliteMailboxStore:
             raise MailboxStoreError("Cached message data is invalid") from error
         except SQLAlchemyError as error:
             raise MailboxStoreError("Unable to read cached message") from error
+
+    def list_contacts(self, mailbox: str, query: ContactListQuery) -> tuple[list[Contact], bool]:
+        """Return a locally filtered contact page ordered by display name."""
+        mailbox_key = _mailbox_key(mailbox)
+        try:
+            with self._session() as session:
+                statement = select(ContactRecord).where(col(ContactRecord.mailbox) == mailbox_key)
+                if query.folder is not None:
+                    folder_id = self._resolve_folder_id(
+                        session, mailbox_key, query.folder, FolderKind.CONTACTS
+                    )
+                    if folder_id is None:
+                        return [], False
+                    statement = statement.where(col(ContactRecord.parent_folder_id) == folder_id)
+                if query.search is not None:
+                    statement = statement.where(
+                        col(ContactRecord.search_text).contains(
+                            query.search.casefold(), autoescape=True
+                        )
+                    )
+                rows = session.exec(
+                    statement.order_by(
+                        func.lower(
+                            func.coalesce(ContactRecord.file_as, ContactRecord.display_name)
+                        ),
+                        col(ContactRecord.id),
+                    )
+                    .offset(query.offset)
+                    .limit(query.limit + 1)
+                ).all()
+                folder_names = self._folder_names(session, mailbox_key)
+                return (
+                    [
+                        _contact_from_row(row, folder_names.get(row.parent_folder_id))
+                        for row in rows[: query.limit]
+                    ],
+                    len(rows) > query.limit,
+                )
+        except (TypeError, ValueError, ValidationError) as error:
+            raise MailboxStoreError("Cached contact data is invalid") from error
+        except SQLAlchemyError as error:
+            raise MailboxStoreError("Unable to list cached contacts") from error
+
+    def get_contact(self, mailbox: str, contact_id: str) -> Contact | None:
+        mailbox_key = _mailbox_key(mailbox)
+        try:
+            with self._session() as session:
+                row = session.get(ContactRecord, (mailbox_key, contact_id))
+                if row is None:
+                    return None
+                folder_names = self._folder_names(session, mailbox_key)
+                return _contact_from_row(row, folder_names.get(row.parent_folder_id))
+        except (TypeError, ValueError, ValidationError) as error:
+            raise MailboxStoreError("Cached contact data is invalid") from error
+        except SQLAlchemyError as error:
+            raise MailboxStoreError("Unable to read cached contact") from error
 
     def count_thread(self, mailbox: str, conversation_id: str) -> int:
         """Count every cached message of one conversation across all folders."""
@@ -549,16 +722,27 @@ class SqliteMailboxStore:
         return max(positions, default=-1) + 1
 
     @staticmethod
-    def _resolve_folder_id(session: Session, mailbox: str, folder: str) -> str | None:
+    def _resolve_folder_id(
+        session: Session, mailbox: str, folder: str, kind: FolderKind
+    ) -> str | None:
         row = session.exec(
             select(FolderRecord).where(
                 col(FolderRecord.mailbox) == mailbox,
+                col(FolderRecord.kind) == kind.value,
                 func.lower(col(FolderRecord.well_known_name)) == folder.casefold(),
             )
         ).first()
         if row is not None:
             return row.id
-        return folder if session.get(FolderRecord, (mailbox, folder)) is not None else None
+        candidate = session.get(FolderRecord, (mailbox, folder))
+        if candidate is not None and candidate.kind == kind.value:
+            return folder
+        return None
+
+    @staticmethod
+    def _folder_names(session: Session, mailbox: str) -> dict[str, str]:
+        rows = session.exec(select(FolderRecord).where(col(FolderRecord.mailbox) == mailbox)).all()
+        return {row.id: row.name for row in rows}
 
     @staticmethod
     def _delete_folder(session: Session, mailbox: str, folder_id: str) -> None:
@@ -574,6 +758,12 @@ class SqliteMailboxStore:
                 col(MessageRecord.parent_folder_id) == folder_id,
             )
         )
+        session.exec(
+            delete(ContactRecord).where(
+                col(ContactRecord.mailbox) == mailbox,
+                col(ContactRecord.parent_folder_id) == folder_id,
+            )
+        )
 
 
 def _mailbox_key(mailbox: str) -> str:
@@ -583,7 +773,7 @@ def _mailbox_key(mailbox: str) -> str:
     return value
 
 
-def _folder_row(mailbox: str, position: int, folder: Folder) -> FolderRecord:
+def _folder_row(mailbox: str, position: int, folder: Folder, kind: FolderKind) -> FolderRecord:
     return FolderRecord(
         mailbox=mailbox,
         id=folder.id,
@@ -591,9 +781,87 @@ def _folder_row(mailbox: str, position: int, folder: Folder) -> FolderRecord:
         parent_id=folder.parent_id,
         name=folder.name,
         well_known_name=folder.well_known_name,
+        kind=kind.value,
         total_count=folder.total_count,
         unread_count=folder.unread_count,
     )
+
+
+def _contact_row(mailbox: str, contact: Contact) -> ContactRecord:
+    return ContactRecord(
+        mailbox=mailbox,
+        id=contact.id,
+        change_key=contact.change_key,
+        parent_folder_id=contact.parent_folder_id,
+        display_name=contact.display_name,
+        file_as=contact.file_as,
+        given_name=contact.given_name,
+        middle_name=contact.middle_name,
+        surname=contact.surname,
+        nickname=contact.nickname,
+        initials=contact.initials,
+        generation=contact.generation,
+        company_name=contact.company_name,
+        department=contact.department,
+        job_title=contact.job_title,
+        office=contact.office,
+        manager=contact.manager,
+        profession=contact.profession,
+        business_homepage=contact.business_homepage,
+        emails_json=_CONTACT_EMAIL_LIST_ADAPTER.dump_json(contact.emails).decode(),
+        phones_json=_CONTACT_PHONE_LIST_ADAPTER.dump_json(contact.phones).decode(),
+        addresses_json=_CONTACT_ADDRESS_LIST_ADAPTER.dump_json(contact.addresses).decode(),
+        im_addresses_json=_CONTACT_IM_LIST_ADAPTER.dump_json(contact.im_addresses).decode(),
+        categories_json=_CATEGORY_LIST_ADAPTER.dump_json(contact.categories).decode(),
+        notes=contact.notes,
+        birthday=contact.birthday.isoformat() if contact.birthday is not None else None,
+        has_picture=contact.has_picture,
+        search_text=_contact_search_text(contact),
+    )
+
+
+def _contact_from_row(row: ContactRecord, folder_name: str | None) -> Contact:
+    return Contact(
+        id=row.id,
+        change_key=row.change_key,
+        parent_folder_id=row.parent_folder_id,
+        folder_name=folder_name,
+        display_name=row.display_name,
+        file_as=row.file_as,
+        given_name=row.given_name,
+        middle_name=row.middle_name,
+        surname=row.surname,
+        nickname=row.nickname,
+        initials=row.initials,
+        generation=row.generation,
+        company_name=row.company_name,
+        department=row.department,
+        job_title=row.job_title,
+        office=row.office,
+        manager=row.manager,
+        profession=row.profession,
+        business_homepage=row.business_homepage,
+        emails=_CONTACT_EMAIL_LIST_ADAPTER.validate_json(row.emails_json),
+        phones=_CONTACT_PHONE_LIST_ADAPTER.validate_json(row.phones_json),
+        addresses=_CONTACT_ADDRESS_LIST_ADAPTER.validate_json(row.addresses_json),
+        im_addresses=_CONTACT_IM_LIST_ADAPTER.validate_json(row.im_addresses_json),
+        categories=_CATEGORY_LIST_ADAPTER.validate_json(row.categories_json),
+        notes=row.notes,
+        birthday=date.fromisoformat(row.birthday) if row.birthday is not None else None,
+        has_picture=row.has_picture,
+    )
+
+
+def _contact_search_text(contact: Contact) -> str:
+    parts = [
+        contact.display_name,
+        contact.file_as,
+        contact.company_name,
+        contact.department,
+        contact.job_title,
+        *(email.address for email in contact.emails),
+    ]
+    return " ".join(part.casefold() for part in parts if part)
 
 
 def _folder_from_row(row: FolderRecord, visible_ids: set[str]) -> Folder:

@@ -1,6 +1,7 @@
 # pyright: reportMissingTypeStubs=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 import shutil
+import warnings
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from exchangelib.errors import (
     ErrorInvalidSyncStateData,
     ErrorItemNotFound,
     ErrorMessageSizeExceeded,
+    ErrorNameResolutionNoResults,
     ErrorNonExistentMailbox,
     ErrorSendAsDenied,
     EWSError,
@@ -27,6 +29,7 @@ from exchangelib.errors import (
 from exchangelib.extended_properties import ExtendedProperty
 from exchangelib.fields import InvalidField
 from exchangelib.folders import Folder as EwsFolder
+from exchangelib.items import Contact as EwsContact
 from exchangelib.items import Message
 from exchangelib.items.calendar_item import BaseMeetingItem
 from exchangelib.properties import HTMLBody, ItemId, Mailbox
@@ -43,11 +46,22 @@ from ews.models import (
     AttachmentMetadata,
     AttachmentSaveResult,
     ConnectionTestResult,
+    Contact,
+    ContactAddress,
+    ContactChange,
+    ContactChangeKind,
+    ContactEmail,
+    ContactIm,
+    ContactPhone,
+    ContactSyncResult,
+    DirectoryContact,
+    DirectorySearchResult,
     DraftMessage,
     FlagStatus,
     Folder,
     FolderChange,
     FolderChangeKind,
+    FolderKind,
     FolderSyncResult,
     Importance,
     InternetHeader,
@@ -98,6 +112,33 @@ DETAIL_FIELDS = (
 FOLDER_SYNC_FIELDS = ("parent_folder_id", "total_count", "unread_count", "is_hidden")
 REPLY_FIELDS = ("subject", "author", "to_recipients", "cc_recipients", "bcc_recipients")
 MAIL_FOLDER_CLASSES = {"IPF.Note", "IPF.Note.OutlookHomepage", "IPF.StickyNote"}
+CONTACT_FOLDER_CLASS = "IPF.Contact"
+CONTACT_FIELDS = (
+    "parent_folder_id",
+    "display_name",
+    "file_as",
+    "given_name",
+    "middle_name",
+    "surname",
+    "nickname",
+    "initials",
+    "generation",
+    "company_name",
+    "department",
+    "job_title",
+    "office",
+    "manager",
+    "profession",
+    "business_homepage",
+    "email_addresses",
+    "phone_numbers",
+    "physical_addresses",
+    "im_addresses",
+    "categories",
+    "notes",
+    "birthday",
+    "has_picture",
+)
 # Distinguished mail folders, keyed by the name the cache stores and mapped to the Account
 # attribute that resolves them. A hierarchy synchronization response carries no
 # distinguished id, so these are resolved through the Account and matched by folder id; a
@@ -116,6 +157,8 @@ WELL_KNOWN_MAIL_FOLDERS = {
     "localfailures": "local_failures",
     "serverfailures": "server_failures",
 }
+# The only distinguished personal-contacts folder. Subfolders inherit the class instead.
+WELL_KNOWN_CONTACT_FOLDERS = {"contacts": "contacts"}
 CONVERSATION_ROOT_INDEX_LENGTH = 22
 CONVERSATION_REPLY_INDEX_LENGTH = 5
 
@@ -174,17 +217,21 @@ class EwsClient:
 
         def operation(account: Any) -> FolderSyncResult:
             root = account.msg_folder_root
-            named_folders = _distinguished_mail_folders(account)
-            well_known_ids = {str(folder.id) for folder in named_folders.values()}
+            named_mail_folders = _distinguished_mail_folders(account)
+            named_contact_folders = _distinguished_contact_folders(account)
+            mail_well_known_ids = {str(folder.id) for folder in named_mail_folders.values()}
             raw_changes = list(
                 root.sync_hierarchy(sync_state=sync_state, only_fields=FOLDER_SYNC_FIELDS)
             )
             changes = [
                 change
                 for kind, folder in raw_changes
-                if (change := _folder_change(kind, folder, well_known_ids)) is not None
+                if (change := _folder_change(kind, folder, mail_well_known_ids)) is not None
             ]
-            changes.extend(_unreported_named_folders(named_folders, changes))
+            changes.extend(_unreported_named_folders(named_mail_folders, changes, FolderKind.MAIL))
+            changes.extend(
+                _unreported_named_folders(named_contact_folders, changes, FolderKind.CONTACTS)
+            )
             new_state = root.folder_sync_state
             if not new_state:
                 raise EwsServiceError("EWS did not return a folder synchronization state")
@@ -192,7 +239,8 @@ class EwsClient:
                 changes=changes,
                 sync_state=str(new_state),
                 well_known_folder_ids={
-                    name: str(folder.id) for name, folder in named_folders.items()
+                    name: str(folder.id)
+                    for name, folder in {**named_mail_folders, **named_contact_folders}.items()
                 },
             )
 
@@ -245,6 +293,87 @@ class EwsClient:
             if len(details) != len(message_ids):
                 raise EwsServiceError("EWS returned an incomplete GetItem response")
             return details
+
+        return self._run(profile, password, operation)
+
+    def sync_contacts(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        folder_id: str,
+        sync_state: str | None,
+    ) -> ContactSyncResult:
+        """Fully consume IdOnly SyncFolderItems for one contact folder."""
+
+        def operation(account: Any) -> ContactSyncResult:
+            folder = _folder_from_id(account, folder_id)
+            raw_changes = list(folder.sync_items(sync_state=sync_state, only_fields=[]))
+            changes = [
+                change
+                for kind, item in raw_changes
+                if (change := _contact_change(kind, item)) is not None
+            ]
+            new_state = folder.item_sync_state
+            if not new_state:
+                raise EwsServiceError("EWS did not return an item synchronization state")
+            return ContactSyncResult(changes=changes, sync_state=str(new_state))
+
+        return self._run(profile, password, operation)
+
+    def fetch_contacts(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        contact_ids: Sequence[tuple[str, str]],
+    ) -> list[Contact]:
+        """Fetch at most ten complete contacts with GetItem."""
+        if len(contact_ids) > 10:
+            raise ValueError("GetItem batches must contain at most 10 contacts")
+        if not contact_ids:
+            return []
+
+        def operation(account: Any) -> list[Contact]:
+            contacts: list[Contact] = []
+            for item in account.fetch(ids=contact_ids, only_fields=CONTACT_FIELDS):
+                if isinstance(item, Exception):
+                    raise item
+                if not isinstance(item, EwsContact):
+                    raise EwsServiceError("EWS returned a non-contact GetItem result")
+                contacts.append(_contact_detail(item))
+            if len(contacts) != len(contact_ids):
+                raise EwsServiceError("EWS returned an incomplete GetItem response")
+            return contacts
+
+        return self._run(profile, password, operation)
+
+    def search_directory(
+        self, profile: Profile, password: SecretStr, query: str
+    ) -> DirectorySearchResult:
+        """Search the Exchange directory (GAL) for people and distribution lists."""
+
+        def operation(account: Any) -> DirectorySearchResult:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                raw = account.protocol.resolve_names(
+                    [query],
+                    return_full_contact_data=True,
+                    search_scope="ActiveDirectory",
+                    shape="AllProperties",
+                )
+            truncated = any("at most 100" in str(warning.message) for warning in caught)
+            contacts: list[DirectoryContact] = []
+            for item in raw:
+                if isinstance(item, ErrorNameResolutionNoResults):
+                    continue
+                if isinstance(item, Exception):
+                    raise item
+                contacts.append(_directory_contact(item))
+            return DirectorySearchResult(
+                user=profile.user.username,
+                query=query,
+                contacts=contacts,
+                truncated=truncated,
+            )
 
         return self._run(profile, password, operation)
 
@@ -610,7 +739,7 @@ def _draft_result(
 
 
 def _folder_change(
-    kind: str, raw_folder: Any, well_known_ids: Collection[str]
+    kind: str, raw_folder: Any, mail_well_known_ids: Collection[str]
 ) -> FolderChange | None:
     folder_id = str(raw_folder.id)
     if kind == FolderChangeKind.DELETE:
@@ -620,7 +749,8 @@ def _folder_change(
             folder_id=folder_id,
             change_key=None if change_key is None else str(change_key),
         )
-    if not _is_mail_folder(raw_folder, well_known_ids):
+    folder_kind = _folder_kind(raw_folder, mail_well_known_ids)
+    if folder_kind is None:
         if kind == FolderChangeKind.UPDATE:
             return FolderChange(kind=FolderChangeKind.DELETE, folder_id=folder_id)
         return None
@@ -629,6 +759,7 @@ def _folder_change(
         folder_id=folder_id,
         change_key=_change_key(raw_folder),
         folder=_folder_model(raw_folder),
+        folder_kind=folder_kind,
     )
 
 
@@ -661,6 +792,24 @@ def _message_change(kind: str, raw_item: Any) -> MessageChange | None:
     )
 
 
+def _contact_change(kind: str, raw_item: Any) -> ContactChange | None:
+    change_kind = ContactChangeKind(kind)
+    if change_kind in {ContactChangeKind.CREATE, ContactChangeKind.UPDATE}:
+        if not isinstance(raw_item, EwsContact):
+            if change_kind is ContactChangeKind.UPDATE:
+                return ContactChange(
+                    kind=ContactChangeKind.DELETE,
+                    contact_id=str(raw_item.id),
+                )
+            return None
+        return ContactChange(
+            kind=change_kind,
+            contact_id=str(raw_item.id),
+            change_key=_change_key(raw_item),
+        )
+    return ContactChange(kind=change_kind, contact_id=str(raw_item.id))
+
+
 def _is_supported_message_item(item: Any) -> bool:
     return isinstance(item, (Message, BaseMeetingItem))
 
@@ -674,10 +823,14 @@ def _change_key(item: Any) -> str:
     return str(value)
 
 
-def _is_mail_folder(folder: Any, well_known_ids: Collection[str]) -> bool:
+def _folder_kind(folder: Any, mail_well_known_ids: Collection[str]) -> FolderKind | None:
     if getattr(folder, "is_hidden", False) is True:
-        return False
-    return str(folder.id) in well_known_ids or folder.folder_class in MAIL_FOLDER_CLASSES
+        return None
+    if str(folder.id) in mail_well_known_ids or folder.folder_class in MAIL_FOLDER_CLASSES:
+        return FolderKind.MAIL
+    if folder.folder_class == CONTACT_FOLDER_CLASS:
+        return FolderKind.CONTACTS
+    return None
 
 
 def _ensure_folder_extensions() -> None:
@@ -721,8 +874,19 @@ def _distinguished_mail_folders(account: Any) -> dict[str, Any]:
     return resolved
 
 
+def _distinguished_contact_folders(account: Any) -> dict[str, Any]:
+    """Resolve the distinguished contacts folder when the mailbox has one."""
+    resolved: dict[str, Any] = {}
+    for name, attribute in WELL_KNOWN_CONTACT_FOLDERS.items():
+        try:
+            resolved[name] = getattr(account, attribute)
+        except ErrorFolderNotFound:
+            continue
+    return resolved
+
+
 def _unreported_named_folders(
-    named_folders: Mapping[str, Any], changes: Sequence[FolderChange]
+    named_folders: Mapping[str, Any], changes: Sequence[FolderChange], folder_kind: FolderKind
 ) -> list[FolderChange]:
     """Report distinguished folders this hierarchy synchronization did not mention.
 
@@ -736,6 +900,7 @@ def _unreported_named_folders(
             kind=FolderChangeKind.CREATE,
             folder_id=str(folder.id),
             folder=_folder_model(folder),
+            folder_kind=folder_kind,
         )
         for folder in named_folders.values()
         if str(folder.id) not in reported
@@ -788,6 +953,132 @@ def _message_detail(item: Any) -> MessageDetail:
         text_body=getattr(item, "text_body", None) or None,
         references=getattr(item, "references", None) or None,
     )
+
+
+def _contact_detail(item: Any) -> Contact:
+    return Contact(
+        id=str(item.id),
+        change_key=str(item.changekey),
+        parent_folder_id=str(item.parent_folder_id.id),
+        display_name=_optional_text(item.display_name) or "",
+        file_as=_optional_text(item.file_as),
+        given_name=_optional_text(item.given_name),
+        middle_name=_optional_text(item.middle_name),
+        surname=_optional_text(item.surname),
+        nickname=_optional_text(item.nickname),
+        initials=_optional_text(item.initials),
+        generation=_optional_text(item.generation),
+        company_name=_optional_text(item.company_name),
+        department=_optional_text(item.department),
+        job_title=_optional_text(item.job_title),
+        office=_optional_text(item.office),
+        manager=_optional_text(item.manager),
+        profession=_optional_text(item.profession),
+        business_homepage=_optional_text(item.business_homepage),
+        emails=_contact_emails(item),
+        phones=_contact_phones(item),
+        addresses=_contact_addresses(item),
+        im_addresses=_contact_im_addresses(item),
+        categories=[str(category) for category in item.categories or []],
+        notes=_optional_text(item.notes),
+        birthday=item.birthday,
+        has_picture=bool(item.has_picture),
+    )
+
+
+def _contact_emails(item: Any) -> list[ContactEmail]:
+    emails: list[ContactEmail] = []
+    for entry in item.email_addresses or []:
+        address = _optional_text(entry.email)
+        if address is None:
+            continue
+        emails.append(ContactEmail(label=_optional_text(entry.label), address=address))
+    return emails
+
+
+def _contact_phones(item: Any) -> list[ContactPhone]:
+    phones: list[ContactPhone] = []
+    for entry in item.phone_numbers or []:
+        number = _optional_text(entry.phone_number)
+        if number is None:
+            continue
+        phones.append(ContactPhone(label=_optional_text(entry.label), number=number))
+    return phones
+
+
+def _contact_addresses(item: Any) -> list[ContactAddress]:
+    return [
+        ContactAddress(
+            label=_optional_text(entry.label),
+            street=_optional_text(entry.street),
+            city=_optional_text(entry.city),
+            state=_optional_text(entry.state),
+            country=_optional_text(entry.country),
+            postal_code=_optional_text(entry.zipcode),
+        )
+        for entry in item.physical_addresses or []
+    ]
+
+
+def _contact_im_addresses(item: Any) -> list[ContactIm]:
+    addresses: list[ContactIm] = []
+    for entry in item.im_addresses or []:
+        address = _optional_text(entry.im_address)
+        if address is None:
+            continue
+        addresses.append(ContactIm(label=_optional_text(entry.label), address=address))
+    return addresses
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value) or None
+
+
+def _directory_contact(item: Any) -> DirectoryContact:
+    mailbox, contact = item
+    emails = _directory_emails(contact)
+    primary = _optional_text(getattr(mailbox, "email_address", None))
+    if primary is None or "@" not in primary:
+        primary = next((email.address for email in emails if "@" in email.address), None)
+    display_name = _optional_text(getattr(mailbox, "name", None)) or _optional_text(
+        getattr(contact, "display_name", None)
+    )
+    return DirectoryContact(
+        display_name=display_name or "",
+        email_address=primary,
+        mailbox_type=_optional_text(getattr(mailbox, "mailbox_type", None)) or "Unknown",
+        given_name=_optional_text(getattr(contact, "given_name", None)),
+        surname=_optional_text(getattr(contact, "surname", None)),
+        company_name=_optional_text(getattr(contact, "company_name", None)),
+        department=_optional_text(getattr(contact, "department", None)),
+        job_title=_optional_text(getattr(contact, "job_title", None)),
+        email_alias=_optional_text(getattr(contact, "email_alias", None)),
+        directory_id=_optional_text(getattr(contact, "directory_id", None)),
+        emails=emails,
+        phones=_contact_phones(contact) if contact is not None else [],
+        addresses=_contact_addresses(contact) if contact is not None else [],
+    )
+
+
+def _directory_emails(contact: Any) -> list[ContactEmail]:
+    emails: list[ContactEmail] = []
+    for entry in getattr(contact, "email_addresses", None) or []:
+        address = _optional_text(entry.email)
+        if address is None:
+            continue
+        emails.append(
+            ContactEmail(label=_optional_text(entry.label), address=_strip_routing_prefix(address))
+        )
+    return emails
+
+
+def _strip_routing_prefix(value: str) -> str:
+    prefix, separator, rest = value.partition(":")
+    if separator and prefix.casefold() in {"smtp", "ex"}:
+        return rest
+    return value
 
 
 def _conversation_id(value: Any) -> str | None:

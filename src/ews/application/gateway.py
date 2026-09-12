@@ -7,6 +7,9 @@ from pydantic import SecretStr
 from ews.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
+    Contact,
+    ContactSyncResult,
+    DirectorySearchResult,
     DraftMessage,
     FolderSyncResult,
     MessageDetail,
@@ -44,6 +47,25 @@ class MailboxGateway(Protocol):
         password: SecretStr,
         message_ids: Sequence[tuple[str, str]],
     ) -> list[MessageDetail]: ...
+
+    def sync_contacts(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        folder_id: str,
+        sync_state: str | None,
+    ) -> ContactSyncResult: ...
+
+    def fetch_contacts(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        contact_ids: Sequence[tuple[str, str]],
+    ) -> list[Contact]: ...
+
+    def search_directory(
+        self, profile: Profile, password: SecretStr, query: str
+    ) -> DirectorySearchResult: ...
 
     def send_message(
         self, profile: Profile, password: SecretStr, message: OutgoingMessage
