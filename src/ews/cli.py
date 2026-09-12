@@ -31,7 +31,7 @@ from ews.commands import (
 from ews.commands.context import CommandContext
 from ews.config import PasswordStore, ProfileStore
 from ews.exchange import EwsClient
-from ews.system import SystemTlsProbe
+from ews.system import LogLevel, SystemTlsProbe, configure_logging
 
 commands = App(
     name="ews",
@@ -78,8 +78,10 @@ app.version = __version__
 def launch(
     *tokens: Annotated[str, Parameter(show=False, allow_leading_hyphen=True)],
     user: str | None = None,
+    log_level: LogLevel = LogLevel.WARNING,
 ) -> int:
-    """Select a profile user and dispatch a resource command."""
+    """Select a profile user, configure diagnostics and dispatch a resource command."""
+    configure_logging(log_level)
     command, bound, ignored = commands.parse_args(tokens)
     if "context" in ignored:
         bound.arguments["context"] = _build_context(user)

@@ -12,6 +12,7 @@ dependencies = [
     "email-validator>=2.3,<3",
     "exchangelib>=5.6,<6",
     "keyring>=25,<26",
+    "loguru>=0.7,<1",
     "pydantic>=2.12,<3",
     "requests>=2.32,<3",
     "rich>=14,<16",
