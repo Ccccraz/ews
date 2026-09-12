@@ -1,13 +1,17 @@
 # pyright: reportMissingTypeStubs=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
+import shutil
 from collections.abc import Callable, Iterable, Sequence
+from pathlib import Path
 from typing import Any
 
 from exchangelib import DELEGATE, NTLM, Account, Configuration, Credentials
 from exchangelib.attachments import FileAttachment
 from exchangelib.errors import (
     ErrorAccessDenied,
+    ErrorAttachmentSizeLimitExceeded,
     ErrorFolderNotFound,
+    ErrorInvalidAttachmentId,
     ErrorInvalidFolderId,
     ErrorInvalidIdEmpty,
     ErrorInvalidIdMalformed,
@@ -28,9 +32,16 @@ from exchangelib.items.calendar_item import BaseMeetingItem
 from exchangelib.properties import HTMLBody, ItemId, Mailbox
 from pydantic import EmailStr, SecretStr, ValidationError
 
-from ews.application import InvalidSyncStateError
+from ews.application import (
+    AttachmentNotFoundError,
+    DestinationExistsError,
+    InvalidDestinationError,
+    InvalidSyncStateError,
+    UnsupportedAttachmentError,
+)
 from ews.models import (
     AttachmentMetadata,
+    AttachmentSaveResult,
     ConnectionTestResult,
     Folder,
     FolderChange,
@@ -294,6 +305,53 @@ class EwsClient:
 
         return self._run_write(profile, password, operation)
 
+    def save_attachment(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_id: str,
+        attachment_id: str,
+        destination: Path,
+    ) -> AttachmentSaveResult:
+        """Stream one file attachment to an explicit local path."""
+
+        def operation(account: Any) -> AttachmentSaveResult:
+            _require_destination(destination)
+            message = _fetch_item(account, message_id, ("attachments",))
+            attachment = _find_file_attachment(message, attachment_id)
+            try:
+                target = destination.open("xb")
+            except FileExistsError as error:
+                raise DestinationExistsError(
+                    f"Destination already exists: {destination}"
+                ) from error
+            except OSError as error:
+                raise InvalidDestinationError(
+                    f"Unable to create destination: {destination}: {error}"
+                ) from error
+            try:
+                with target, attachment.fp as source:
+                    shutil.copyfileobj(source, target)
+            except EWSError:
+                destination.unlink(missing_ok=True)
+                raise
+            except OSError as error:
+                destination.unlink(missing_ok=True)
+                raise EwsServiceError("Unable to download the attachment") from error
+            return AttachmentSaveResult(
+                user=profile.user.username,
+                message_id=message_id,
+                attachment_id=attachment_id,
+                name=str(attachment.name or ""),
+                content_type=None
+                if attachment.content_type is None
+                else str(attachment.content_type),
+                path=destination,
+                bytes_written=destination.stat().st_size,
+            )
+
+        return self._run_write(profile, password, operation)
+
     @staticmethod
     def _run[ResultT](
         profile: Profile,
@@ -336,11 +394,16 @@ class EwsClient:
             ErrorItemNotFound,
             ErrorInvalidIdMalformed,
             ErrorInvalidIdEmpty,
+            ErrorInvalidAttachmentId,
             ErrorFolderNotFound,
             ErrorInvalidFolderId,
         ) as error:
             raise EwsNotFoundError("EWS could not find the requested mailbox resource") from error
-        except (ErrorInvalidRecipients, ErrorMessageSizeExceeded) as error:
+        except (
+            ErrorInvalidRecipients,
+            ErrorMessageSizeExceeded,
+            ErrorAttachmentSizeLimitExceeded,
+        ) as error:
             raise EwsRejectedError("EWS rejected the requested mailbox change") from error
         except EWSError as error:
             raise EwsServiceError("Unable to access the EWS service") from error
@@ -378,6 +441,23 @@ def _fetch_item(account: Any, message_id: str, only_fields: Sequence[str]) -> An
             raise item
         return item
     raise EwsNotFoundError("EWS did not return the requested message")
+
+
+def _find_file_attachment(message: Any, attachment_id: str) -> Any:
+    for attachment in message.attachments or []:
+        if str(attachment.attachment_id.id) != attachment_id:
+            continue
+        if not isinstance(attachment, FileAttachment):
+            raise UnsupportedAttachmentError(f"Only file attachments can be saved: {attachment_id}")
+        return attachment
+    raise AttachmentNotFoundError(f"Attachment not found: {attachment_id}")
+
+
+def _require_destination(destination: Path) -> None:
+    if not destination.parent.is_dir():
+        raise InvalidDestinationError(f"Destination directory does not exist: {destination.parent}")
+    if destination.is_dir():
+        raise InvalidDestinationError(f"Destination is a directory: {destination}")
 
 
 def _mailboxes(addresses: Sequence[EmailStr]) -> list[Any]:

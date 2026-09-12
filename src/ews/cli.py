@@ -18,6 +18,7 @@ from ews.commands import (
     password_status,
     reply_all_to_message,
     reply_to_message,
+    save_attachment,
     send_message,
     set_password,
     set_profile,
@@ -38,6 +39,7 @@ commands = App(
 )
 folder = App(name="folder", help="Read mail folders.")
 message = App(name="message", help="Read and write messages.")
+attachment = App(name="attachment", help="Read message attachments.")
 config = App(name="config", help="Inspect configuration.")
 auth = App(name="auth", help="Manage authentication.")
 
@@ -47,6 +49,7 @@ commands.command(sync_mailbox, name="sync")
 commands.command(doctor, name="doctor")
 commands.command(folder)
 commands.command(message)
+commands.command(attachment)
 commands.command(config)
 commands.command(auth)
 folder.command(list_folders, name="list")
@@ -57,6 +60,7 @@ message.command(reply_to_message, name="reply")
 message.command(reply_all_to_message, name="reply-all")
 message.command(mark_read, name="mark-read")
 message.command(move_message, name="move")
+attachment.command(save_attachment, name="save")
 config.command(show_config, name="show")
 config.command(show_config_path, name="path")
 auth.command(set_password, name="set-password")

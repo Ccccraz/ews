@@ -1,3 +1,4 @@
+from ews.models.attachment import AttachmentSaveResult
 from ews.models.connection_test import ConnectionTestResult
 from ews.models.doctor import DoctorCheck, DoctorResult
 from ews.models.mailbox import (
@@ -36,6 +37,7 @@ from ews.models.write import MessageMoveResult, MessageReadStateResult, MessageS
 
 __all__ = [
     "AttachmentMetadata",
+    "AttachmentSaveResult",
     "ConnectionTestResult",
     "DoctorCheck",
     "DoctorResult",
