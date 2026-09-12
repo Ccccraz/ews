@@ -23,6 +23,17 @@ class StubService:
         return FolderListResult(user=selected_user, folders=[])
 
 
+class FailingService:
+    """Stand-in service that fails in a way no layer expects."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def list_folders(self, selected_user: str) -> FolderListResult:
+        del selected_user
+        raise self._error
+
+
 def test_help(capsys: CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exit_info:
         app(["--help"])
@@ -64,10 +75,10 @@ def test_legacy_positional_test_user_is_not_supported(capsys: CaptureFixture[str
     assert "Unused Tokens" in captured.err
 
 
-def _use_stub_service(monkeypatch: MonkeyPatch) -> None:
+def _use_stub_service(monkeypatch: MonkeyPatch, service: object | None = None) -> None:
     def build_context(user: str | None) -> CommandContext:
-        service = cast(MailboxApplicationService, StubService())
-        return CommandContext(user=user, service=service)
+        chosen = StubService() if service is None else service
+        return CommandContext(user=user, service=cast(MailboxApplicationService, chosen))
 
     monkeypatch.setattr("ews.cli._build_context", build_context)
 
@@ -146,3 +157,47 @@ def test_log_format_rejects_unknown_values(capsys: CaptureFixture[str]) -> None:
     assert exit_info.value.code == 1
     assert "yaml" in captured.err
     assert captured.out == ""
+
+
+def test_unexpected_command_errors_return_the_internal_error_envelope(
+    capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
+) -> None:
+    _use_stub_service(monkeypatch, FailingService(RuntimeError("boom")))
+
+    with pytest.raises(SystemExit) as exit_info:
+        app(["--user", "AGENT@EXAMPLE.COM", "folder", "list"])
+
+    captured = capsys.readouterr()
+    assert exit_info.value.code == 1
+    output = cast(dict[str, JsonValue], json.loads(captured.out))
+    assert output["schema_version"] == 1
+    assert output["ok"] is False
+    error = cast(dict[str, JsonValue], output["error"])
+    assert error["code"] == "internal_error"
+    assert error["message"] == "Unexpected internal error"
+    assert error["retryable"] is False
+    assert error["details"] == {"type": "RuntimeError"}
+    assert "Traceback" not in captured.out
+    assert "Unhandled internal error" in captured.err
+    assert "RuntimeError: boom" in captured.err
+
+
+def test_unexpected_context_errors_return_the_internal_error_envelope(
+    capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
+) -> None:
+    def build_context(user: str | None) -> CommandContext:
+        del user
+        raise KeyError("profile store")
+
+    monkeypatch.setattr("ews.cli._build_context", build_context)
+
+    with pytest.raises(SystemExit) as exit_info:
+        app(["--user", "AGENT@EXAMPLE.COM", "folder", "list"])
+
+    captured = capsys.readouterr()
+    assert exit_info.value.code == 1
+    output = cast(dict[str, JsonValue], json.loads(captured.out))
+    assert output["ok"] is False
+    error = cast(dict[str, JsonValue], output["error"])
+    assert error["code"] == "internal_error"
+    assert error["details"] == {"type": "KeyError"}

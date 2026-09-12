@@ -2,6 +2,7 @@ import sys
 from collections.abc import Sequence
 from typing import Annotated
 
+import structlog
 from cyclopts import App, Parameter
 from truststore import inject_into_ssl
 
@@ -28,10 +29,12 @@ from ews.commands import (
     sync_mailbox,
     test_access,
 )
-from ews.commands.context import CommandContext
+from ews.commands.context import CommandContext, fail
 from ews.config import PasswordStore, ProfileStore
 from ews.exchange import EwsClient
 from ews.system import LogFormat, LogLevel, SystemTlsProbe, configure_logging
+
+logger = structlog.get_logger()
 
 commands = App(
     name="ews",
@@ -83,10 +86,21 @@ def launch(
 ) -> int:
     """Select a profile user, configure diagnostics and dispatch a resource command."""
     configure_logging(log_level, log_format)
-    command, bound, ignored = commands.parse_args(tokens)
-    if "context" in ignored:
-        bound.arguments["context"] = _build_context(user)
-    result = command(*bound.args, **bound.kwargs)
+    try:
+        command, bound, ignored = commands.parse_args(tokens)
+        if "context" in ignored:
+            bound.arguments["context"] = _build_context(user)
+        result = command(*bound.args, **bound.kwargs)
+    except Exception as error:
+        # Stdout must never degrade into a traceback: report the internal error as the
+        # regular envelope and keep the traceback on the diagnostics channel.
+        logger.exception("Unhandled internal error")
+        return fail(
+            "internal_error",
+            "Unexpected internal error",
+            1,
+            details={"type": type(error).__name__},
+        )
     return result if isinstance(result, int) else 0
 
 
