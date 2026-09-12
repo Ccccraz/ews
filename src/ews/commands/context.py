@@ -18,6 +18,7 @@ from ews.config import (
 )
 from ews.contracts import Error, ErrorEnvelope, SuccessEnvelope, write_contract
 from ews.exchange import EwsAuthenticationError, EwsServiceError
+from ews.storage import MailboxCacheNotReadyError, MailboxStoreError
 
 
 @dataclass(frozen=True)
@@ -44,8 +45,16 @@ def run_read[ResultT: BaseModel](
         return fail("authentication_error", str(error), 3)
     except UserNotFoundError as error:
         return fail("profile_not_found", str(error), 4)
+    except MailboxCacheNotReadyError:
+        return fail(
+            "cache_not_ready",
+            f"Mailbox cache is not ready; run ews --user {context.user} sync",
+            4,
+        )
     except (FolderNotFoundError, MessageNotFoundError) as error:
         return fail("resource_not_found", str(error), 4)
+    except MailboxStoreError as error:
+        return fail("cache_error", str(error), 2)
     except EwsServiceError as error:
         return fail("service_error", str(error), 5, retryable=True)
 

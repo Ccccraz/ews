@@ -7,7 +7,14 @@ from truststore import inject_into_ssl
 
 from ews import __version__
 from ews.application import MailboxApplicationService
-from ews.commands import get_message, list_folders, list_messages, set_profile, test_access
+from ews.commands import (
+    get_message,
+    list_folders,
+    list_messages,
+    set_profile,
+    sync_mailbox,
+    test_access,
+)
 from ews.commands.context import CommandContext
 from ews.config import PasswordStore, ProfileStore
 from ews.exchange import EwsClient
@@ -22,6 +29,7 @@ message = App(name="message", help="Read messages.")
 
 commands.command(set_profile, name="set")
 commands.command(test_access, name="test")
+commands.command(sync_mailbox, name="sync")
 commands.command(folder)
 commands.command(message)
 folder.command(list_folders, name="list")

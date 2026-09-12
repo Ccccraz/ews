@@ -1,6 +1,6 @@
 # pyright: reportMissingTypeStubs=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 from exchangelib import DELEGATE, NTLM, Account, Configuration, Credentials
@@ -8,6 +8,7 @@ from exchangelib.attachments import FileAttachment
 from exchangelib.errors import (
     ErrorAccessDenied,
     ErrorInvalidIdMalformed,
+    ErrorInvalidSyncStateData,
     ErrorItemNotFound,
     ErrorNonExistentMailbox,
     EWSError,
@@ -17,26 +18,30 @@ from exchangelib.extended_properties import ExtendedProperty
 from exchangelib.fields import InvalidField
 from exchangelib.folders import Folder as EwsFolder
 from exchangelib.items import Message
+from exchangelib.items.calendar_item import BaseMeetingItem
 from exchangelib.properties import HTMLBody
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
-from ews.application import FolderNotFoundError, InvalidFolderError, MessageNotFoundError
+from ews.application import InvalidSyncStateError
 from ews.models import (
     AttachmentMetadata,
     ConnectionTestResult,
     Folder,
+    FolderChange,
+    FolderChangeKind,
+    FolderSyncResult,
     Importance,
     InternetHeader,
+    MailboxAddress,
     MessageBody,
+    MessageChange,
+    MessageChangeKind,
     MessageDetail,
-    MessageListQuery,
-    MessageSummary,
+    MessageSyncResult,
     Profile,
-    ReadState,
 )
-from ews.models.mailbox import MailboxAddress
 
-LIST_FIELDS = (
+DETAIL_FIELDS = (
     "parent_folder_id",
     "subject",
     "author",
@@ -44,8 +49,6 @@ LIST_FIELDS = (
     "is_read",
     "has_attachments",
     "importance",
-)
-DETAIL_FIELDS = LIST_FIELDS + (
     "sender",
     "to_recipients",
     "cc_recipients",
@@ -59,6 +62,7 @@ DETAIL_FIELDS = LIST_FIELDS + (
     "headers",
     "attachments",
 )
+FOLDER_SYNC_FIELDS = ("parent_folder_id", "total_count", "unread_count", "is_hidden")
 MAIL_FOLDER_CLASSES = {"IPF.Note", "IPF.Note.OutlookHomepage", "IPF.StickyNote"}
 MAIL_FOLDER_WELL_KNOWN_NAMES = {"conversationhistory"}
 MAIL_NAVIGATION_EXCLUDED_WELL_KNOWN_NAMES = {
@@ -85,11 +89,9 @@ class EwsServiceError(Exception):
 
 
 class EwsClient:
-    """Perform synchronous operations against one EWS profile."""
+    """Perform synchronous remote operations against one EWS profile."""
 
     def test_access(self, profile: Profile, password: SecretStr) -> ConnectionTestResult:
-        """Authenticate and fetch Inbox metadata through EWS."""
-
         def operation(account: Any) -> ConnectionTestResult:
             inbox = account.inbox
             inbox.refresh()
@@ -103,84 +105,81 @@ class EwsClient:
 
         return self._run(profile, password, operation)
 
-    def list_folders(self, profile: Profile, password: SecretStr) -> list[Folder]:
-        """Return all folders that support messages."""
+    def sync_hierarchy(
+        self, profile: Profile, password: SecretStr, sync_state: str | None
+    ) -> FolderSyncResult:
+        """Fully consume SyncFolderHierarchy and return its new state."""
 
-        def operation(account: Any) -> list[Folder]:
-            folders = list(account.msg_folder_root.walk())
-            mail_folders = [folder for folder in folders if _is_mail_folder(folder)]
-            mail_folder_ids = {str(folder.id) for folder in mail_folders}
-            return [
-                Folder(
-                    id=str(folder.id),
-                    parent_id=(
-                        str(folder.parent_folder_id.id)
-                        if folder.parent_folder_id is not None
-                        and str(folder.parent_folder_id.id) in mail_folder_ids
-                        else None
-                    ),
-                    name=str(folder.name),
-                    well_known_name=_well_known_name(folder),
-                    total_count=int(folder.total_count or 0),
-                    unread_count=int(folder.unread_count or 0),
-                )
-                for folder in mail_folders
+        def operation(account: Any) -> FolderSyncResult:
+            root = account.msg_folder_root
+            raw_changes = list(
+                root.sync_hierarchy(sync_state=sync_state, only_fields=FOLDER_SYNC_FIELDS)
+            )
+            changes = [
+                change
+                for kind, folder in raw_changes
+                if (change := _folder_change(kind, folder)) is not None
             ]
-
-        return self._run(profile, password, operation)
-
-    def list_messages(
-        self, profile: Profile, password: SecretStr, query: MessageListQuery
-    ) -> tuple[list[MessageSummary], bool]:
-        """Return one reverse-chronological page using EWS-side filters."""
-
-        def operation(account: Any) -> tuple[list[MessageSummary], bool]:
-            folder = _resolve_folder(account, query.folder)
-            queryset = folder.all().only(*LIST_FIELDS)
-            if query.read_state is ReadState.READ:
-                queryset = queryset.filter(is_read=True)
-            elif query.read_state is ReadState.UNREAD:
-                queryset = queryset.filter(is_read=False)
-            if query.sender is not None:
-                queryset = queryset.filter(sender=str(query.sender))
-            if query.subject_contains is not None:
-                queryset = queryset.filter(subject__icontains=query.subject_contains)
-            if query.body_contains is not None:
-                queryset = queryset.filter(body__icontains=query.body_contains)
-            if query.received_from is not None:
-                queryset = queryset.filter(datetime_received__gte=query.received_from)
-            if query.received_before is not None:
-                queryset = queryset.filter(datetime_received__lt=query.received_before)
-            stop = query.offset + query.limit + 1
-            items = list(queryset.order_by("-datetime_received")[query.offset : stop])
-            return (
-                [_message_summary(item) for item in items[: query.limit]],
-                len(items) > query.limit,
+            new_state = root.folder_sync_state
+            if not new_state:
+                raise EwsServiceError("EWS did not return a folder synchronization state")
+            return FolderSyncResult(
+                changes=changes,
+                sync_state=str(new_state),
+                well_known_folder_ids={"inbox": str(account.inbox.id)},
             )
 
         return self._run(profile, password, operation)
 
-    def get_message(self, profile: Profile, password: SecretStr, message_id: str) -> MessageDetail:
-        """Fetch one message using a separate GetItem request."""
+    def sync_items(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        folder_id: str,
+        sync_state: str | None,
+    ) -> MessageSyncResult:
+        """Fully consume IdOnly SyncFolderItems for one visible mail folder."""
 
-        def operation(account: Any) -> MessageDetail:
-            fetched = iter(account.fetch(ids=[(message_id, None)], only_fields=DETAIL_FIELDS))
-            try:
-                item = next(fetched)
-            except StopIteration as error:
-                raise MessageNotFoundError(f"Message not found: {message_id}") from error
-            if isinstance(item, (ErrorItemNotFound, ErrorInvalidIdMalformed)):
-                raise MessageNotFoundError(f"Message not found: {message_id}") from item
-            if isinstance(item, Exception):
-                raise item
-            if not isinstance(item, Message):
-                raise MessageNotFoundError(f"Message not found: {message_id}")
-            return _message_detail(item)
+        def operation(account: Any) -> MessageSyncResult:
+            folder = _folder_from_id(account, folder_id)
+            raw_changes = list(folder.sync_items(sync_state=sync_state, only_fields=[]))
+            changes = [
+                change
+                for kind, item in raw_changes
+                if (change := _message_change(kind, item)) is not None
+            ]
+            new_state = folder.item_sync_state
+            if not new_state:
+                raise EwsServiceError("EWS did not return an item synchronization state")
+            return MessageSyncResult(changes=changes, sync_state=str(new_state))
 
-        try:
-            return self._run(profile, password, operation)
-        except (ErrorItemNotFound, ErrorInvalidIdMalformed) as error:
-            raise MessageNotFoundError(f"Message not found: {message_id}") from error
+        return self._run(profile, password, operation)
+
+    def fetch_messages(
+        self,
+        profile: Profile,
+        password: SecretStr,
+        message_ids: Sequence[tuple[str, str]],
+    ) -> list[MessageDetail]:
+        """Fetch at most ten complete messages with GetItem."""
+        if len(message_ids) > 10:
+            raise ValueError("GetItem batches must contain at most 10 messages")
+        if not message_ids:
+            return []
+
+        def operation(account: Any) -> list[MessageDetail]:
+            details: list[MessageDetail] = []
+            for item in account.fetch(ids=message_ids, only_fields=DETAIL_FIELDS):
+                if isinstance(item, Exception):
+                    raise item
+                if not _is_supported_message_item(item):
+                    raise EwsServiceError("EWS returned a non-message GetItem result")
+                details.append(_message_detail(item))
+            if len(details) != len(message_ids):
+                raise EwsServiceError("EWS returned an incomplete GetItem response")
+            return details
+
+        return self._run(profile, password, operation)
 
     @staticmethod
     def _run[ResultT](
@@ -206,12 +205,91 @@ class EwsClient:
                 access_type=DELEGATE,
             )
             return operation(account)
+        except ErrorInvalidSyncStateData as error:
+            raise InvalidSyncStateError("EWS synchronization state is no longer valid") from error
         except (UnauthorizedError, ErrorAccessDenied, ErrorNonExistentMailbox) as error:
             raise EwsAuthenticationError(
                 "EWS rejected the configured credentials or mailbox"
             ) from error
+        except (ErrorItemNotFound, ErrorInvalidIdMalformed) as error:
+            raise EwsServiceError("EWS could not fetch a synchronized message") from error
         except EWSError as error:
             raise EwsServiceError("Unable to access the EWS service") from error
+        except (AttributeError, TypeError, ValueError, ValidationError) as error:
+            raise EwsServiceError("EWS returned data that could not be normalized") from error
+
+
+def _folder_change(kind: str, raw_folder: Any) -> FolderChange | None:
+    folder_id = str(raw_folder.id)
+    if kind == FolderChangeKind.DELETE:
+        change_key = getattr(raw_folder, "changekey", None)
+        return FolderChange(
+            kind=FolderChangeKind.DELETE,
+            folder_id=folder_id,
+            change_key=None if change_key is None else str(change_key),
+        )
+    if not _is_mail_folder(raw_folder):
+        if kind == FolderChangeKind.UPDATE:
+            return FolderChange(kind=FolderChangeKind.DELETE, folder_id=folder_id)
+        return None
+    folder = Folder(
+        id=folder_id,
+        parent_id=(
+            str(raw_folder.parent_folder_id.id) if raw_folder.parent_folder_id is not None else None
+        ),
+        name=str(raw_folder.name),
+        well_known_name=_well_known_name(raw_folder),
+        total_count=int(raw_folder.total_count or 0),
+        unread_count=int(raw_folder.unread_count or 0),
+    )
+    return FolderChange(
+        kind=FolderChangeKind(kind),
+        folder_id=folder_id,
+        change_key=_change_key(raw_folder),
+        folder=folder,
+    )
+
+
+def _message_change(kind: str, raw_item: Any) -> MessageChange | None:
+    change_kind = MessageChangeKind(kind)
+    if change_kind is MessageChangeKind.READ_FLAG_CHANGE:
+        item_id, is_read = raw_item
+        return MessageChange(
+            kind=change_kind,
+            message_id=str(item_id.id),
+            change_key=_change_key(item_id),
+            is_read=bool(is_read),
+        )
+    if change_kind in {MessageChangeKind.CREATE, MessageChangeKind.UPDATE}:
+        if not _is_supported_message_item(raw_item):
+            if change_kind is MessageChangeKind.UPDATE:
+                return MessageChange(
+                    kind=MessageChangeKind.DELETE,
+                    message_id=str(raw_item.id),
+                )
+            return None
+    return MessageChange(
+        kind=change_kind,
+        message_id=str(raw_item.id),
+        change_key=(
+            _change_key(raw_item)
+            if change_kind in {MessageChangeKind.CREATE, MessageChangeKind.UPDATE}
+            else None
+        ),
+    )
+
+
+def _is_supported_message_item(item: Any) -> bool:
+    return isinstance(item, (Message, BaseMeetingItem))
+
+
+def _change_key(item: Any) -> str:
+    value = getattr(item, "changekey", None)
+    if value is None:
+        value = getattr(item, "change_key", None)
+    if value is None:
+        raise EwsServiceError("EWS item change is missing a change key")
+    return str(value)
 
 
 def _is_mail_folder(folder: Any) -> bool:
@@ -237,22 +315,14 @@ def _well_known_name(folder: Any) -> str | None:
     return getattr(type(folder), "DISTINGUISHED_FOLDER_ID", None)
 
 
-def _resolve_folder(account: Any, folder_id: str) -> Any:
-    if folder_id.casefold() == "inbox":
-        return account.inbox
-
-    for folder in account.msg_folder_root.walk():
-        if str(folder.id) != folder_id:
-            continue
-        if not _is_mail_folder(folder):
-            raise InvalidFolderError(f"Folder cannot contain messages: {folder_id}")
-        return folder
-    raise FolderNotFoundError(f"Folder not found: {folder_id}")
+def _folder_from_id(account: Any, folder_id: str) -> Any:
+    return EwsFolder(root=account.msg_folder_root, id=folder_id)
 
 
-def _message_summary(item: Any) -> MessageSummary:
+def _message_detail(item: Any) -> MessageDetail:
     author = item.author or item.sender
-    return MessageSummary(
+    body = item.body
+    return MessageDetail(
         id=str(item.id),
         change_key=str(item.changekey),
         parent_folder_id=str(item.parent_folder_id.id),
@@ -262,22 +332,6 @@ def _message_summary(item: Any) -> MessageSummary:
         is_read=bool(item.is_read),
         has_attachments=bool(item.has_attachments),
         importance=Importance(str(item.importance).casefold()),
-    )
-
-
-def _message_detail(item: Any) -> MessageDetail:
-    summary = _message_summary(item)
-    body = item.body
-    return MessageDetail(
-        id=summary.id,
-        change_key=summary.change_key,
-        parent_folder_id=summary.parent_folder_id,
-        subject=summary.subject,
-        from_address=summary.from_address,
-        received_at=summary.received_at,
-        is_read=summary.is_read,
-        has_attachments=summary.has_attachments,
-        importance=summary.importance,
         sender=_mail_address(item.sender),
         to=_mail_addresses(item.to_recipients),
         cc=_mail_addresses(item.cc_recipients),
@@ -310,14 +364,14 @@ def _mail_addresses(mailboxes: Iterable[Any] | None) -> list[MailboxAddress]:
 
 
 def _attachment_metadata(attachment: Any) -> AttachmentMetadata:
-    raw_attachment = attachment
-    attachment_id = raw_attachment.attachment_id
+    content_type = attachment.content_type
+    content_id = attachment.content_id
     return AttachmentMetadata(
-        id=str(attachment_id.id),
+        id=str(attachment.attachment_id.id),
         kind="file" if isinstance(attachment, FileAttachment) else "item",
-        name=str(raw_attachment.name or ""),
-        content_type=raw_attachment.content_type,
-        size=int(raw_attachment.size or 0),
-        is_inline=bool(raw_attachment.is_inline),
-        content_id=raw_attachment.content_id,
+        name=str(attachment.name or ""),
+        content_type=None if content_type is None else str(content_type),
+        size=int(str(attachment.size or 0)),
+        is_inline=bool(attachment.is_inline),
+        content_id=None if content_id is None else str(content_id),
     )
