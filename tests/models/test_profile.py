@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from ews.models import Profile, Server, User
+from ews_cli.models import Profile, Server, User
 
 PROFILE_DATA = {
     "server": {"endpoint": "https://mail.example.com/EWS/Exchange.asmx"},

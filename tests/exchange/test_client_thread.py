@@ -10,9 +10,9 @@ from exchangelib.items import Message
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
-from ews.exchange import EwsClient, EwsServiceError
-from ews.exchange.client import _ensure_item_extensions  # pyright: ignore[reportPrivateUsage]
-from ews.models import FlagStatus, Profile
+from ews_cli.exchange import EwsClient, EwsServiceError
+from ews_cli.exchange.client import _ensure_item_extensions  # pyright: ignore[reportPrivateUsage]
+from ews_cli.models import FlagStatus, Profile
 
 ROOT_INDEX = bytes.fromhex("0101dd4255558dafa9804f89e441a54f73c6ac15e9e9")
 REPLY_INDEX = bytes.fromhex("0101dd4255558dafa9804f89e441a54f73c6ac15e9e9b6ca26effc")
@@ -183,7 +183,7 @@ def test_ensure_item_extensions_registers_once() -> None:
 
 
 def test_ensure_item_extensions_skips_a_replaced_item_class(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setattr("ews.exchange.client.Message", SimpleNamespace)
+    monkeypatch.setattr("ews_cli.exchange.client.Message", SimpleNamespace)
 
     _ensure_item_extensions()
 
@@ -199,11 +199,11 @@ def test_fetch_messages_rejects_an_incomplete_response(monkeypatch: MonkeyPatch)
 
 def _install(monkeypatch: MonkeyPatch, items: Sequence[object]) -> None:
     FakeAccount.items = list(items)
-    monkeypatch.setattr("ews.exchange.client.Credentials", FakeCredentials)
-    monkeypatch.setattr("ews.exchange.client.Configuration", FakeConfiguration)
-    monkeypatch.setattr("ews.exchange.client.Account", FakeAccount)
-    monkeypatch.setattr("ews.exchange.client.Message", FakeMessage)
-    monkeypatch.setattr("ews.exchange.client.BaseMeetingItem", FakeMeetingMessage)
+    monkeypatch.setattr("ews_cli.exchange.client.Credentials", FakeCredentials)
+    monkeypatch.setattr("ews_cli.exchange.client.Configuration", FakeConfiguration)
+    monkeypatch.setattr("ews_cli.exchange.client.Account", FakeAccount)
+    monkeypatch.setattr("ews_cli.exchange.client.Message", FakeMessage)
+    monkeypatch.setattr("ews_cli.exchange.client.BaseMeetingItem", FakeMeetingMessage)
 
 
 def _profile() -> Profile:

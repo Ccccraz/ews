@@ -3,7 +3,7 @@ from typing import Literal
 
 from pytest import CaptureFixture
 
-from ews.contracts import ContractModel, Error, ErrorEnvelope, SuccessEnvelope, write_contract
+from ews_cli.contracts import ContractModel, Error, ErrorEnvelope, SuccessEnvelope, write_contract
 
 
 class ExampleData(ContractModel):

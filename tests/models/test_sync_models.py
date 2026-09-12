@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from ews.models import FolderChange, MessageChange
+from ews_cli.models import FolderChange, MessageChange
 
 
 @pytest.mark.parametrize(

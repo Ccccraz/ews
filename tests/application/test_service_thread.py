@@ -6,13 +6,13 @@ import pytest
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
-from ews.application import (
+from ews_cli.application import (
     MailboxApplicationService,
     MessageNotFoundError,
     UserNotFoundError,
 )
-from ews.config import PasswordStore, ProfileStore
-from ews.models import (
+from ews_cli.config import PasswordStore, ProfileStore
+from ews_cli.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
     Contact,
@@ -34,7 +34,7 @@ from ews.models import (
     OutgoingReply,
     Profile,
 )
-from ews.storage import MailboxCacheNotReadyError, SqliteMailboxStore
+from ews_cli.storage import MailboxCacheNotReadyError, SqliteMailboxStore
 
 MAILBOX = "agent@example.com"
 CONVERSATION = "conversation-1"

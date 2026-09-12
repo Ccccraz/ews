@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from ews.models import User
+from ews_cli.models import User
 
 
 def test_user_accepts_mailbox_identity() -> None:

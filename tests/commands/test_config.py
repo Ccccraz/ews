@@ -8,9 +8,9 @@ from keyring.errors import KeyringError, PasswordDeleteError
 from pydantic import JsonValue
 from pytest import CaptureFixture, MonkeyPatch
 
-from ews.cli import app
-from ews.config import ProfileStore
-from ews.models import Profile
+from ews_cli.cli import app
+from ews_cli.config import ProfileStore
+from ews_cli.models import Profile
 
 
 def test_config_show_returns_non_secret_profile(
@@ -65,7 +65,7 @@ def test_config_show_handles_invalid_profile(
     tmp_path: Path, capsys: CaptureFixture[str], monkeypatch: MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    profile_path = tmp_path / ".config" / "taskseed" / "ews" / "profiles.toml"
+    profile_path = tmp_path / ".config" / "taskseed" / "ews-cli" / "profiles.toml"
     profile_path.parent.mkdir(parents=True)
     profile_path.write_text("not valid toml", encoding="utf-8")
 
@@ -86,7 +86,9 @@ def test_config_path_returns_path_when_profile_does_not_exist(
     assert output == {
         "schema_version": 1,
         "ok": True,
-        "data": {"profile_path": str(tmp_path / ".config" / "taskseed" / "ews" / "profiles.toml")},
+        "data": {
+            "profile_path": str(tmp_path / ".config" / "taskseed" / "ews-cli" / "profiles.toml")
+        },
     }
 
 

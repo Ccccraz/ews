@@ -16,14 +16,14 @@ from exchangelib.properties import HTMLBody
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
-from ews.exchange import (
+from ews_cli.exchange import (
     EwsAuthenticationError,
     EwsClient,
     EwsNotFoundError,
     EwsRejectedError,
     EwsServiceError,
 )
-from ews.models import DraftMessage, MailboxAddress, OutgoingMessage, OutgoingReply, Profile
+from ews_cli.models import DraftMessage, MailboxAddress, OutgoingMessage, OutgoingReply, Profile
 
 
 class FakeCredentials:
@@ -499,12 +499,12 @@ def _install(monkeypatch: MonkeyPatch, *, items: Sequence[object] = ()) -> None:
     FakeAccount.last_instance = None
     FakeOutgoingMessage.instances = []
     FakeOutgoingMessage.error = None
-    monkeypatch.setattr("ews.exchange.client.Credentials", FakeCredentials)
-    monkeypatch.setattr("ews.exchange.client.Configuration", FakeConfiguration)
-    monkeypatch.setattr("ews.exchange.client.Account", FakeAccount)
-    monkeypatch.setattr("ews.exchange.client.ItemId", FakeItemId)
-    monkeypatch.setattr("ews.exchange.client.Message", FakeOutgoingMessage)
-    monkeypatch.setattr("ews.exchange.client.Mailbox", FakeMailbox)
+    monkeypatch.setattr("ews_cli.exchange.client.Credentials", FakeCredentials)
+    monkeypatch.setattr("ews_cli.exchange.client.Configuration", FakeConfiguration)
+    monkeypatch.setattr("ews_cli.exchange.client.Account", FakeAccount)
+    monkeypatch.setattr("ews_cli.exchange.client.ItemId", FakeItemId)
+    monkeypatch.setattr("ews_cli.exchange.client.Message", FakeOutgoingMessage)
+    monkeypatch.setattr("ews_cli.exchange.client.Mailbox", FakeMailbox)
 
 
 def _fake_mailboxes(value: object) -> list[FakeMailbox]:
@@ -520,7 +520,7 @@ def _patch_folder_from_id(monkeypatch: MonkeyPatch, folder: object) -> None:
         assert folder_id == "folder-id"
         return folder
 
-    monkeypatch.setattr("ews.exchange.client._folder_from_id", folder_from_id)
+    monkeypatch.setattr("ews_cli.exchange.client._folder_from_id", folder_from_id)
 
 
 def _outgoing() -> OutgoingMessage:

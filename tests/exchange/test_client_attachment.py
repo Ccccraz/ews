@@ -14,14 +14,14 @@ from exchangelib.errors import (
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
-from ews.application import (
+from ews_cli.application import (
     AttachmentNotFoundError,
     DestinationExistsError,
     InvalidDestinationError,
     UnsupportedAttachmentError,
 )
-from ews.exchange import EwsClient, EwsNotFoundError, EwsRejectedError, EwsServiceError
-from ews.models import Profile
+from ews_cli.exchange import EwsClient, EwsNotFoundError, EwsRejectedError, EwsServiceError
+from ews_cli.models import Profile
 
 PAYLOAD = b"attachment payload" * 100
 
@@ -307,11 +307,11 @@ def _install(monkeypatch: MonkeyPatch, *, attachments: Sequence[object] = ()) ->
     FakeAccount.fetch_error = None
     FakeAccount.fetch_calls = []
     FakeAccount.last_instance = None
-    monkeypatch.setattr("ews.exchange.client.Credentials", FakeCredentials)
-    monkeypatch.setattr("ews.exchange.client.Configuration", FakeConfiguration)
-    monkeypatch.setattr("ews.exchange.client.Account", FakeAccount)
-    monkeypatch.setattr("ews.exchange.client.ItemId", FakeItemId)
-    monkeypatch.setattr("ews.exchange.client.FileAttachment", FakeFileAttachment)
+    monkeypatch.setattr("ews_cli.exchange.client.Credentials", FakeCredentials)
+    monkeypatch.setattr("ews_cli.exchange.client.Configuration", FakeConfiguration)
+    monkeypatch.setattr("ews_cli.exchange.client.Account", FakeAccount)
+    monkeypatch.setattr("ews_cli.exchange.client.ItemId", FakeItemId)
+    monkeypatch.setattr("ews_cli.exchange.client.FileAttachment", FakeFileAttachment)
 
 
 def _profile() -> Profile:

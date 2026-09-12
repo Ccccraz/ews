@@ -1,7 +1,7 @@
 import pytest
 from pydantic import HttpUrl, ValidationError
 
-from ews.models import Server
+from ews_cli.models import Server
 
 
 def test_server_accepts_ews_endpoint() -> None:

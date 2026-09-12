@@ -1,7 +1,7 @@
 [project]
 name = "taskseed-ews"
 version = "0.1.1"
-description = "A CLI adapter between AI agents and Exchange Web Services"
+description = "EWS CLI: a CLI adapter between AI agents and Exchange Web Services"
 readme = "README.md"
 authors = [
     { name = "HuYang", email = "huyangcommit@gmail.com" }
@@ -22,14 +22,14 @@ dependencies = [
 ]
 
 [project.scripts]
-ews = "ews.cli:main"
+ews-cli = "ews_cli.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "ews"
+module-name = "ews_cli"
 
 [dependency-groups]
 dev = [
@@ -48,7 +48,7 @@ typeCheckingMode = "strict"
 addopts = [
     "--strict-config",
     "--strict-markers",
-    "--cov=ews",
+    "--cov=ews_cli",
     "--cov-branch",
     "--cov-report=term-missing",
     "--cov-fail-under=90",

@@ -6,9 +6,9 @@ from keyring.errors import KeyringError, PasswordDeleteError
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
-from ews.application import ProfileApplicationService
-from ews.config import PasswordStore, PasswordStoreError, ProfileStore
-from ews.models import Profile
+from ews_cli.application import ProfileApplicationService
+from ews_cli.config import PasswordStore, PasswordStoreError, ProfileStore
+from ews_cli.models import Profile
 
 
 def _profile(mailbox: str, username: str, host: str = "mail.example.com") -> Profile:
@@ -48,10 +48,10 @@ def test_set_adds_profiles_and_replaces_one_mailbox(
     service.set_profile(replacement, SecretStr("replacement-secret"))
 
     assert service.list_profiles() == (replacement, second)
-    assert credentials[("taskseed.ews:new.example.com", "DOMAIN\\new-alpha")] == (
+    assert credentials[("taskseed.ews-cli:new.example.com", "DOMAIN\\new-alpha")] == (
         "replacement-secret"
     )
-    assert deleted == [("taskseed.ews:mail.example.com", "DOMAIN\\alpha")]
+    assert deleted == [("taskseed.ews-cli:mail.example.com", "DOMAIN\\alpha")]
 
 
 def test_delete_profile_tolerates_a_missing_password(

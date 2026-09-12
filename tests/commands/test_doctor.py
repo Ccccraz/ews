@@ -9,13 +9,13 @@ from keyring.errors import InitError, KeyringError, KeyringLocked, NoKeyringErro
 from pydantic import JsonValue, SecretStr
 from pytest import CaptureFixture, MonkeyPatch
 
-from ews.cli import app
-from ews.config import ProfileStore
-from ews.exchange import EwsAuthenticationError, EwsServiceError
-from ews.models import ConnectionTestResult, Profile, TlsCheckResult
-from ews.system import TlsProbeError
+from ews_cli.cli import app
+from ews_cli.config import ProfileStore
+from ews_cli.exchange import EwsAuthenticationError, EwsServiceError
+from ews_cli.models import ConnectionTestResult, Profile, TlsCheckResult
+from ews_cli.system import TlsProbeError
 
-PROFILE_PATH = Path(".config") / "taskseed" / "ews" / "profiles.toml"
+PROFILE_PATH = Path(".config") / "taskseed" / "ews-cli" / "profiles.toml"
 
 
 class SuccessfulClient:
@@ -305,8 +305,8 @@ def _configure(
 def _set_dependencies(
     monkeypatch: MonkeyPatch, client_type: type[object], probe_type: type[object]
 ) -> None:
-    monkeypatch.setattr("ews.cli.EwsClient", client_type)
-    monkeypatch.setattr("ews.cli.SystemTlsProbe", probe_type)
+    monkeypatch.setattr("ews_cli.cli.EwsClient", client_type)
+    monkeypatch.setattr("ews_cli.cli.SystemTlsProbe", probe_type)
 
 
 def _invoke(capsys: CaptureFixture[str], *arguments: str) -> tuple[int, dict[str, JsonValue]]:

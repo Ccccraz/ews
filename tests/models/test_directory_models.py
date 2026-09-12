@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from ews.models import (
+from ews_cli.models import (
     ContactAddress,
     ContactEmail,
     ContactPhone,

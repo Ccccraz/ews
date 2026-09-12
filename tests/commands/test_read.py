@@ -8,12 +8,12 @@ import pytest
 from pydantic import JsonValue, SecretStr
 from pytest import CaptureFixture, MonkeyPatch
 
-from ews.application import MailboxApplicationService
-from ews.cli import app
-from ews.commands.context import CommandContext
-from ews.config import PasswordStore, ProfileStore
-from ews.exchange import EwsServiceError
-from ews.models import (
+from ews_cli.application import MailboxApplicationService
+from ews_cli.cli import app
+from ews_cli.commands.context import CommandContext
+from ews_cli.config import PasswordStore, ProfileStore
+from ews_cli.exchange import EwsServiceError
+from ews_cli.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
     Contact,
@@ -41,7 +41,7 @@ from ews.models import (
     OutgoingReply,
     Profile,
 )
-from ews.storage import SqliteMailboxStore
+from ews_cli.storage import SqliteMailboxStore
 
 
 class ReadGateway:
@@ -404,7 +404,7 @@ def test_read_before_first_sync_returns_cache_not_ready(
     error = cast(dict[str, JsonValue], output["error"])
     assert error["code"] == "cache_not_ready"
     assert error["retryable"] is False
-    assert "ews --user DOMAIN\\agent sync" in str(error["message"])
+    assert "ews-cli --user DOMAIN\\agent sync" in str(error["message"])
 
 
 @pytest.mark.parametrize(
@@ -472,7 +472,7 @@ def _configure_context(
             service = MailboxApplicationService(profile_store, PasswordStore(), gateway, store)
             return CommandContext(user=user, service=service)
 
-        monkeypatch.setattr("ews.cli._build_context", build_empty_context)
+        monkeypatch.setattr("ews_cli.cli._build_context", build_empty_context)
         return
     store.initialize()
     folder = Folder(
@@ -519,7 +519,7 @@ def _configure_context(
         service = MailboxApplicationService(profile_store, PasswordStore(), gateway, store)
         return CommandContext(user=user, service=service)
 
-    monkeypatch.setattr("ews.cli._build_context", build_context)
+    monkeypatch.setattr("ews_cli.cli._build_context", build_context)
 
 
 def _invoke(args: list[str], capsys: CaptureFixture[str]) -> tuple[int, dict[str, JsonValue]]:

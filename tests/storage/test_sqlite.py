@@ -7,7 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine, select
 
-from ews.models import (
+from ews_cli.models import (
     Contact,
     ContactChange,
     ContactChangeKind,
@@ -23,14 +23,14 @@ from ews.models import (
     MessageDetail,
     MessageListQuery,
 )
-from ews.storage import (
+from ews_cli.storage import (
     MailboxCacheNotReadyError,
     MailboxStoreError,
     SqliteMailboxStore,
     UnsupportedCacheSchemaVersionError,
     default_cache_path,
 )
-from ews.storage.sqlite import (
+from ews_cli.storage.sqlite import (
     CacheMetadataRecord,
     ContactRecord,
     ItemSyncStateRecord,
@@ -40,7 +40,9 @@ from ews.storage.sqlite import (
 
 
 def test_default_cache_path_uses_config_directory(tmp_path: Path) -> None:
-    assert default_cache_path(tmp_path) == tmp_path / ".config" / "taskseed" / "ews" / "cache.db"
+    assert (
+        default_cache_path(tmp_path) == tmp_path / ".config" / "taskseed" / "ews-cli" / "cache.db"
+    )
 
 
 def test_initialize_is_explicit_and_idempotent(tmp_path: Path) -> None:

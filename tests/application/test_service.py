@@ -6,9 +6,9 @@ import keyring
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
-from ews.application import MailboxApplicationService, TlsProbe, UserNotFoundError
-from ews.config import PasswordStore, ProfileStore
-from ews.models import (
+from ews_cli.application import MailboxApplicationService, TlsProbe, UserNotFoundError
+from ews_cli.config import PasswordStore, ProfileStore
+from ews_cli.models import (
     AttachmentSaveResult,
     ConnectionTestResult,
     Contact,
@@ -31,7 +31,7 @@ from ews.models import (
     Profile,
     TlsCheckResult,
 )
-from ews.storage import SqliteMailboxStore
+from ews_cli.storage import SqliteMailboxStore
 
 
 class FakeGateway:

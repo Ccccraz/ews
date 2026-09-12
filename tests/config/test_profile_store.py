@@ -3,8 +3,13 @@ from pathlib import Path
 import pytest
 from pytest import MonkeyPatch
 
-from ews.config import InvalidProfileError, ProfileNotFoundError, ProfileStore, default_profile_path
-from ews.models import Profile
+from ews_cli.config import (
+    InvalidProfileError,
+    ProfileNotFoundError,
+    ProfileStore,
+    default_profile_path,
+)
+from ews_cli.models import Profile
 
 
 def _profile(mailbox: str, username: str, host: str = "mail.example.com") -> Profile:
@@ -18,7 +23,7 @@ def _profile(mailbox: str, username: str, host: str = "mail.example.com") -> Pro
 
 def test_default_profile_path() -> None:
     assert default_profile_path(Path("/Users/agent")) == Path(
-        "/Users/agent/.config/taskseed/ews/profiles.toml"
+        "/Users/agent/.config/taskseed/ews-cli/profiles.toml"
     )
 
 
@@ -102,7 +107,7 @@ def test_failed_atomic_replace_preserves_the_previous_file(
         del source, destination
         raise OSError("replace failed")
 
-    monkeypatch.setattr("ews.config.profile_store.os.replace", fail_replace)
+    monkeypatch.setattr("ews_cli.config.profile_store.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="replace failed"):
         store.save(_profile("other@example.com", "DOMAIN\\other"))

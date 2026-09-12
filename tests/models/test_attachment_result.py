@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from ews.models import AttachmentSaveResult
+from ews_cli.models import AttachmentSaveResult
 
 
 def test_attachment_save_result_serializes_the_destination_path() -> None:

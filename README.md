@@ -1,4 +1,4 @@
-# ews
+# ews-cli
 
 [中文](README.md) | [English](README.en.md)
 
@@ -10,6 +10,31 @@
 - **本地优先的读取**：`sync` 把邮件同步进本地 SQLite 缓存，读命令只读缓存，因此不受网络抖动影响。
 - **受限且显式的写入**：只提供发送、保存草稿、回复、标记已读、移动和附件下载；**没有邮件或文件夹删除能力**。
 - **凭据安全**：密码只存系统 keyring，绝不进入配置文件、命令行参数、输出或日志。
+
+## Getting Started
+
+面向首次使用的人类用户，三步把邮箱接上：
+
+```nu
+# 1. 安装（详见下方「安装」）
+uv tool install taskseed-ews
+
+# 2. 交互式写入非敏感配置；密码无回显地存入系统 keyring
+ews-cli set
+
+# 3. 验证配置、系统 keyring、系统 TLS 与 NTLM 登录，并返回服务器版本
+ews-cli --user <mailbox-or-username> test
+```
+
+`ews-cli set` 依次询问 EWS endpoint（HTTPS）、mailbox SMTP 地址、NTLM 用户名和密码：除密码外的内容写入 `$HOME/.config/taskseed/ews-cli/profiles.toml`，密码只存系统 keyring，绝不进入配置文件、命令行参数、输出或日志。
+
+支持多个 profile，用全局选项 `--user` 选择（接受 mailbox 或 NTLM username，忽略大小写）。验证通过后执行首次同步，即可开始读取：
+
+```nu
+ews-cli --user <mailbox-or-username> sync
+```
+
+初次配置的细节见[配置与凭据](#配置与凭据)，日常用法见[快速开始](#快速开始)。
 
 ## 能力
 
@@ -41,45 +66,45 @@ uv tool install taskseed-ews
 也可以固定到某个发布 tag（把 `vX.Y.Z` 换成实际版本）：
 
 ```nu
-uv tool install git+https://github.com/Ccccraz/ews@vX.Y.Z
+uv tool install git+https://github.com/Ccccraz/ews-cli@vX.Y.Z
 ```
 
 从源码安装（开发或想改代码）：
 
 ```nu
-git clone https://github.com/Ccccraz/ews
-cd ews
+git clone https://github.com/Ccccraz/ews-cli
+cd ews-cli
 uv sync
-uv run ews --help
+uv run ews-cli --help
 ```
 
 ## 快速开始
 
 ```nu
 # 1. 交互式写入非敏感配置；密码无回显地存入系统 keyring
-ews set
+ews-cli set
 
 # 2. 验证配置、系统 keyring、系统 TLS 与 NTLM 登录，并返回服务器版本
-ews --user agent test
+ews-cli --user agent test
 
 # 3. 首次同步（全量，数千封邮件约 1–2 分钟）；之后每次都是增量
-ews --user agent sync
+ews-cli --user agent sync
 
 # 4. 看文件夹树：folder ID 和 well-known name 都能用于后续选择文件夹
-ews --user agent folder list
+ews-cli --user agent folder list
 
 # 5. 读邮件：结构化过滤 + 分页
-ews --user agent message list --read-state unread --limit 20
-ews --user agent message get <message-id>
+ews-cli --user agent message list --read-state unread --limit 20
+ews-cli --user agent message get <message-id>
 
 # 6. 读整串会话（跨文件夹、按时间正序、默认含正文），用来理解上下文
-ews --user agent message thread <message-id>
+ews-cli --user agent message thread <message-id>
 
 # 7. 回复：正文只写你要新增的内容，引用块由服务器生成
-"Thanks, will follow up tomorrow." | ews --user agent message reply-all <message-id> --body-file -
+"Thanks, will follow up tomorrow." | ews-cli --user agent message reply-all <message-id> --body-file -
 
 # 8. 保存回复草稿供人工检查，不发送邮件
-"Draft response" | ews --user agent message draft reply <message-id> --body-file -
+"Draft response" | ews-cli --user agent message draft reply <message-id> --body-file -
 ```
 
 `--user` 是全局选项，接受 NTLM 用户名或邮箱地址（大小写不敏感）。
@@ -127,7 +152,7 @@ ews --user agent message thread <message-id>
 ```
 
 ```json
-{"schema_version":1,"ok":false,"error":{"code":"cache_not_ready","message":"Mailbox cache is not ready; run ews --user agent@example.com sync","details":{},"retryable":false}}
+{"schema_version":1,"ok":false,"error":{"code":"cache_not_ready","message":"Mailbox cache is not ready; run ews-cli --user agent@example.com sync","details":{},"retryable":false}}
 ```
 
 退出码：
@@ -150,7 +175,7 @@ ews --user agent message thread <message-id>
 
 ## 配置与凭据
 
-非敏感配置为 TOML，固定在 `$HOME/.config/taskseed/ews/profiles.toml`（`$HOME` 即 Python `Path.home()`，各平台路径规则统一）。每个
+非敏感配置为 TOML，固定在 `$HOME/.config/taskseed/ews-cli/profiles.toml`（`$HOME` 即 Python `Path.home()`，各平台路径规则统一）。每个
 `[[profiles]]` 保存一个 profile；所有 mailbox 与 NTLM username 作为别名，在忽略大小写后必须唯一：
 
 ```toml
@@ -171,13 +196,13 @@ mailbox = "operator@example.com"
 username = "operator"
 ```
 
-密码单独存放于系统 keyring：service 为 `taskseed.ews:<endpoint-host>`，account 为 NTLM username。密码**不得**出现在 TOML、命令行参数、stdout、stderr 或日志中；`config show` 永不显示秘密。`config delete` 先删除所选 keyring 密码，再删除 profile；密码本来不存在也成功，keyring 后端失败则保留 profile。SQLite 邮箱缓存始终保留。
+密码单独存放于系统 keyring：service 为 `taskseed.ews-cli:<endpoint-host>`，account 为 NTLM username。密码**不得**出现在 TOML、命令行参数、stdout、stderr 或日志中；`config show` 永不显示秘密。`config delete` 先删除所选 keyring 密码，再删除 profile；密码本来不存在也成功，keyring 后端失败则保留 profile。SQLite 邮箱缓存始终保留。
 
-旧版 `$HOME/.config/taskseed/ews/profile.toml` 不会被读取或自动迁移。升级时，可为每个账户重新运行 `ews set`；也可手工创建上述 `profiles.toml`，把原 `[server]`、`[user]` 分别改为 `[profiles.server]`、`[profiles.user]` 并在前面加入 `[[profiles]]`。keyring 键格式没有变化；除非 endpoint host 或 NTLM username 也发生变化，否则无需重新保存密码。
+旧命名空间（单 profile 的 `$HOME/.config/taskseed/ews/profile.toml`、配置目录 `$HOME/.config/taskseed/ews/`、keyring service `taskseed.ews:<endpoint-host>`）不被读取也不自动迁移。升级时对每个账户重新运行 `ews-cli set`，写入新位置 `$HOME/.config/taskseed/ews-cli/profiles.toml` 与新 keyring service `taskseed.ews-cli:<endpoint-host>`；也可手工创建上述 `profiles.toml`，把旧 `[server]`、`[user]` 分别改为 `[profiles.server]`、`[profiles.user]` 并在前面加入 `[[profiles]]`。旧密码不会自动迁移，需要重新输入。
 
 ## 本地缓存与同步
 
-- 缓存是 SQLite 文件 `$HOME/.config/taskseed/ews/cache.db`，只存邮件元数据与正文以及个人联系人的常用字段，不存附件内容与联系人照片。
+- 缓存是 SQLite 文件 `$HOME/.config/taskseed/ews-cli/cache.db`，只存邮件元数据与正文以及个人联系人的常用字段，不存附件内容与联系人照片。
 - 读取类命令**只读缓存**；缓存在完成一次完整 `sync` 之前不可读，此时返回 `cache_not_ready`/4 并提示先 `sync`。受此门控的包括 `contact list|get`。`contact search` 是例外：它实时查企业通讯录，不读也不写缓存。
 - `sync` 同时同步邮件文件夹与个人联系人文件夹（`IPF.Contact`），写入同一份缓存并共用一个 `ready` 标记。
 - 写入类命令**只改远端、不改缓存**：`mark-read` 与 `move` 的效果由下一次 `sync` 收敛，所以「写后立即读」可能看到写前快照。

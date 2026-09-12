@@ -15,9 +15,9 @@ from exchangelib.errors import (
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
-from ews.application import InvalidSyncStateError
-from ews.exchange import EwsAuthenticationError, EwsClient, EwsServiceError
-from ews.models import (
+from ews_cli.application import InvalidSyncStateError
+from ews_cli.exchange import EwsAuthenticationError, EwsClient, EwsServiceError
+from ews_cli.models import (
     ContactChangeKind,
     FolderChangeKind,
     FolderKind,
@@ -408,7 +408,7 @@ def test_sync_items_maps_all_change_types_with_id_only(monkeypatch: MonkeyPatch)
     root.folders = [folder]
     FakeAccount.root = root
     _patch_account(monkeypatch, FakeAccount)
-    monkeypatch.setattr("ews.exchange.client.Message", SimpleNamespace)
+    monkeypatch.setattr("ews_cli.exchange.client.Message", SimpleNamespace)
     _patch_folder_from_id(monkeypatch, folder)
 
     result = EwsClient().sync_items(_profile(), SecretStr("secret"), "folder-id", "item-state-1")
@@ -451,9 +451,9 @@ def test_fetch_messages_maps_full_detail_and_enforces_batch_limit(
     FakeAccount.fetched = [item]
     FakeAccount.root = FakeRoot()
     _patch_account(monkeypatch, FakeAccount)
-    monkeypatch.setattr("ews.exchange.client.Message", FakeMessage)
-    monkeypatch.setattr("ews.exchange.client.HTMLBody", FakeHtmlBody)
-    monkeypatch.setattr("ews.exchange.client.FileAttachment", FakeFileAttachment)
+    monkeypatch.setattr("ews_cli.exchange.client.Message", FakeMessage)
+    monkeypatch.setattr("ews_cli.exchange.client.HTMLBody", FakeHtmlBody)
+    monkeypatch.setattr("ews_cli.exchange.client.FileAttachment", FakeFileAttachment)
 
     messages = EwsClient().fetch_messages(
         _profile(), SecretStr("secret"), [("message-id", "change-key")]
@@ -475,7 +475,7 @@ def test_fetch_messages_accepts_meeting_items(monkeypatch: MonkeyPatch) -> None:
     item = _meeting_item("meeting-id")
     FakeAccount.fetched = [item]
     _patch_account(monkeypatch, FakeAccount)
-    monkeypatch.setattr("ews.exchange.client.BaseMeetingItem", FakeMeetingItem)
+    monkeypatch.setattr("ews_cli.exchange.client.BaseMeetingItem", FakeMeetingItem)
 
     messages = EwsClient().fetch_messages(
         _profile(), SecretStr("secret"), [("meeting-id", "change-key")]
@@ -494,7 +494,7 @@ def test_fetch_messages_preserves_internal_exchange_addresses(
     item.to_recipients = [SimpleNamespace(name="Agent", email_address="DOMAIN\\agent")]
     FakeAccount.fetched = [item]
     _patch_account(monkeypatch, FakeAccount)
-    monkeypatch.setattr("ews.exchange.client.Message", FakeMessage)
+    monkeypatch.setattr("ews_cli.exchange.client.Message", FakeMessage)
 
     messages = EwsClient().fetch_messages(
         _profile(), SecretStr("secret"), [("message-id", "change-key")]
@@ -535,9 +535,9 @@ def test_fetch_messages_rejects_incomplete_response(monkeypatch: MonkeyPatch) ->
 
 
 def _patch_account(monkeypatch: MonkeyPatch, account_type: type[object]) -> None:
-    monkeypatch.setattr("ews.exchange.client.Credentials", FakeCredentials)
-    monkeypatch.setattr("ews.exchange.client.Configuration", FakeConfiguration)
-    monkeypatch.setattr("ews.exchange.client.Account", account_type)
+    monkeypatch.setattr("ews_cli.exchange.client.Credentials", FakeCredentials)
+    monkeypatch.setattr("ews_cli.exchange.client.Configuration", FakeConfiguration)
+    monkeypatch.setattr("ews_cli.exchange.client.Account", account_type)
 
 
 def _patch_folder_from_id(monkeypatch: MonkeyPatch, folder: MailFolder) -> None:
@@ -546,7 +546,7 @@ def _patch_folder_from_id(monkeypatch: MonkeyPatch, folder: MailFolder) -> None:
         assert folder_id == folder.id
         return folder
 
-    monkeypatch.setattr("ews.exchange.client._folder_from_id", folder_from_id)
+    monkeypatch.setattr("ews_cli.exchange.client._folder_from_id", folder_from_id)
 
 
 def _profile() -> Profile:
@@ -674,7 +674,7 @@ def test_sync_contacts_maps_changes_and_skips_unsupported_items(
     FakeAccount.root = FakeRoot()
     _patch_account(monkeypatch, FakeAccount)
     _patch_folder_from_id(monkeypatch, folder)
-    monkeypatch.setattr("ews.exchange.client.EwsContact", FakeContactItem)
+    monkeypatch.setattr("ews_cli.exchange.client.EwsContact", FakeContactItem)
 
     result = EwsClient().sync_contacts(_profile(), SecretStr("secret"), "contacts-folder", None)
 
@@ -694,7 +694,7 @@ def test_fetch_contacts_maps_common_fields_and_enforces_batch_limit(
     FakeAccount.fetched = [FakeContact("contact-id")]
     FakeAccount.root = FakeRoot()
     _patch_account(monkeypatch, FakeAccount)
-    monkeypatch.setattr("ews.exchange.client.EwsContact", FakeContact)
+    monkeypatch.setattr("ews_cli.exchange.client.EwsContact", FakeContact)
 
     contacts = EwsClient().fetch_contacts(
         _profile(), SecretStr("secret"), [("contact-id", "contact-change")]
@@ -721,7 +721,7 @@ def test_fetch_contacts_maps_common_fields_and_enforces_batch_limit(
 def test_fetch_contacts_rejects_incomplete_and_wrong_type(monkeypatch: MonkeyPatch) -> None:
     FakeAccount.fetched = []
     _patch_account(monkeypatch, FakeAccount)
-    monkeypatch.setattr("ews.exchange.client.EwsContact", FakeContact)
+    monkeypatch.setattr("ews_cli.exchange.client.EwsContact", FakeContact)
     with pytest.raises(EwsServiceError, match="incomplete"):
         EwsClient().fetch_contacts(_profile(), SecretStr("secret"), [("contact-id", "ck")])
 
